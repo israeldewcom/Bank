@@ -3,7 +3,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.middleware.httpsredirect import HTTPSRedirectMiddleware
 from fastapi_limiter import FastAPILimiter
-import redis, asyncio
+import redis.asyncio as redis          # <-- FIX: async Redis client
+import asyncio
 from datetime import datetime, timezone
 from chronos_v5.config import Config
 from chronos_v5.api.middleware import CorrelationIdMiddleware
