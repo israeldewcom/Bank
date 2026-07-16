@@ -1,4 +1,3 @@
-# api package
 # chronos_v5/api/routers/__init__.py
 
 from . import admin
