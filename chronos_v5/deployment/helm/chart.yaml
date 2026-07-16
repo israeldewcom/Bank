@@ -1,0 +1,6 @@
+apiVersion: v2
+name: chronos
+description: Chronos v5.2 - Enterprise Settlement Optimizer
+type: application
+version: 5.2.1
+appVersion: "5.2.1"
