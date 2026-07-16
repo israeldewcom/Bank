@@ -7,9 +7,6 @@ import redis, asyncio
 from datetime import datetime, timezone
 from chronos_v5.config import Config
 from chronos_v5.api.middleware import CorrelationIdMiddleware
-from chronos_v5.api.routers import (
-    trade, collateral, risk, backtest, model, audit, dashboard, pricing, execution, nibss, websocket, admin
-)
 from chronos_v5.logger_setup import logger
 from prometheus_client import generate_latest, REGISTRY
 from fastapi.responses import Response
@@ -63,19 +60,34 @@ if Config.OTEL_ENABLED:
     except ImportError as e:
         logger.warning(f"OpenTelemetry import failed: {e}")
 
-app.include_router(trade.router, prefix="/trade", tags=["Trade"])
-app.include_router(collateral.router, prefix="/collateral", tags=["Collateral"])
-app.include_router(risk.router, prefix="/risk", tags=["Risk"])
-app.include_router(backtest.router, prefix="/backtest", tags=["Backtest"])
-app.include_router(model.router, prefix="/model", tags=["Model"])
-app.include_router(audit.router, prefix="/audit", tags=["Audit"])
-app.include_router(dashboard.router, prefix="/dashboard", tags=["Dashboard"])
-app.include_router(pricing.router, prefix="/pricing", tags=["Pricing"])
-app.include_router(execution.router, prefix="/execution", tags=["Execution"])
-app.include_router(nibss.router, prefix="/nibss", tags=["NIBSS"])
-app.include_router(websocket.router, prefix="/ws", tags=["WebSocket"])
-# Include admin router
-app.include_router(admin.router, prefix="/admin", tags=["Admin"])
+# ===== DIRECT ROUTER IMPORTS (bypassing package import issues) =====
+from chronos_v5.api.routers.trade import router as trade_router
+from chronos_v5.api.routers.collateral import router as collateral_router
+from chronos_v5.api.routers.risk import router as risk_router
+from chronos_v5.api.routers.backtest import router as backtest_router
+from chronos_v5.api.routers.model import router as model_router
+from chronos_v5.api.routers.audit import router as audit_router
+from chronos_v5.api.routers.dashboard import router as dashboard_router
+from chronos_v5.api.routers.pricing import router as pricing_router
+from chronos_v5.api.routers.execution import router as execution_router
+from chronos_v5.api.routers.nibss import router as nibss_router
+from chronos_v5.api.routers.websocket import router as websocket_router
+from chronos_v5.api.routers.admin import router as admin_router
+
+# Include routers
+app.include_router(trade_router, prefix="/trade", tags=["Trade"])
+app.include_router(collateral_router, prefix="/collateral", tags=["Collateral"])
+app.include_router(risk_router, prefix="/risk", tags=["Risk"])
+app.include_router(backtest_router, prefix="/backtest", tags=["Backtest"])
+app.include_router(model_router, prefix="/model", tags=["Model"])
+app.include_router(audit_router, prefix="/audit", tags=["Audit"])
+app.include_router(dashboard_router, prefix="/dashboard", tags=["Dashboard"])
+app.include_router(pricing_router, prefix="/pricing", tags=["Pricing"])
+app.include_router(execution_router, prefix="/execution", tags=["Execution"])
+app.include_router(nibss_router, prefix="/nibss", tags=["NIBSS"])
+app.include_router(websocket_router, prefix="/ws", tags=["WebSocket"])
+app.include_router(admin_router, prefix="/admin", tags=["Admin"])
+
 # Include advanced routers if enabled
 if Config.ENV != "production" or os.getenv("ADVANCED_FEATURES_ENABLED", "false").lower() == "true":
     try:
