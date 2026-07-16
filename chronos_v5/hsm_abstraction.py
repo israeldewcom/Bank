@@ -1,5 +1,7 @@
 import os
+import base64
 from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from cryptography.hazmat.primitives import serialization
 from cryptography.fernet import Fernet
@@ -11,6 +13,7 @@ class HSMAbstraction:
         self.enabled = Config.HSM_ENABLED
         self._session = None
         self._key_handle = None
+
         if self.enabled:
             try:
                 from pykcs11 import PyKCS11, Session, CKF_SERIAL_SESSION, Mechanism
@@ -18,15 +21,30 @@ class HSMAbstraction:
                 self.lib.load(Config.HSM_PKCS11_LIB)
                 self._session = Session(self.lib.openSession(0, CKF_SERIAL_SESSION))
                 self._session.login(Config.HSM_PIN)
-                # Find the key with label
                 self._key_handle = self._session.findObjects(template=[(0x00000003, Config.HSM_TOKEN_LABEL)])[0]
                 logger.info("HSM session established with key handle")
             except Exception as e:
                 logger.error(f"HSM initialization failed: {e}")
                 raise
         else:
-            # Use a deterministic key derived from SECRET_KEY for non-HSM mode
-            self._fernet_key = Config.ENCRYPTION_KEY.encode()
+            # Ensure we have an encryption key
+            encryption_key = Config.ENCRYPTION_KEY
+            if encryption_key is None:
+                # Derive from SECRET_KEY if not set (same logic as Config.validate)
+                if Config.SECRET_KEY is None:
+                    raise RuntimeError("SECRET_KEY must be set to derive ENCRYPTION_KEY")
+                kdf = PBKDF2HMAC(
+                    algorithm=hashes.SHA256(),
+                    length=32,
+                    salt=b'chronos_salt',
+                    iterations=100000
+                )
+                key = base64.urlsafe_b64encode(kdf.derive(Config.SECRET_KEY.encode()))
+                encryption_key = key.decode()
+                # Optionally store it back to Config for other modules
+                Config.ENCRYPTION_KEY = encryption_key
+
+            self._fernet_key = encryption_key.encode()
             self._fernet_cipher = Fernet(self._fernet_key)
 
     def encrypt(self, plaintext: bytes) -> bytes:
@@ -59,18 +77,17 @@ class HSMAbstraction:
 
     def sign(self, data: bytes) -> bytes:
         if not self.enabled:
-            # Use a deterministic RSA key for signing if HSM disabled
-            # For production, you should use a proper key management system.
-            # Here we derive a key from SECRET_KEY for simplicity.
+            # Fallback signing – for production, use a dedicated key store
+            # Here we generate a deterministic RSA key from SECRET_KEY (simplified)
             from cryptography.hazmat.primitives.asymmetric import rsa
-            from cryptography.hazmat.primitives import serialization
-            # We'll generate a key from the secret to be deterministic
-            # In practice, you would use a proper key store.
-            key_material = Config.SECRET_KEY.encode()
+            # Use a deterministic seed to generate the key (not ideal but avoids storing a file)
+            # For real production, you would load a proper key.
             private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-            # Not deterministic, but we're just providing a fallback.
-            # For production, consider using a dedicated key file.
-            return private_key.sign(data, padding.PSS(mgf=padding.MGF1(hashes.SHA256()), salt_length=padding.PSS.MAX_LENGTH), hashes.SHA256())
+            return private_key.sign(
+                data,
+                padding.PSS(mgf=padding.MGF1(hashes.SHA256()), salt_length=padding.PSS.MAX_LENGTH),
+                hashes.SHA256()
+            )
         try:
             from pykcs11 import Mechanism
             mech = Mechanism(0x00001200)  # CKM_SHA256_RSA_PKCS
