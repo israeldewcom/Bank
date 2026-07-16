@@ -26,3 +26,4 @@ feedparser==6.0.11
 bcrypt==4.3.0
 alembic==1.16.1
 python-dotenv==1.1.0
+fastapi-limiter==0.1.5   # <-- ADD THIS LINE
