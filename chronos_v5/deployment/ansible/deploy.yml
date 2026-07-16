@@ -1,0 +1,38 @@
+---
+- name: Deploy Chronos tenant
+  hosts: all
+  become: yes
+  vars:
+    tenant_name: "{{ tenant | default('demo') }}"
+    org_type: "{{ org | default('bank') }}"
+    app_root: /opt/chronos
+  tasks:
+    - name: Ensure app directory exists
+      file:
+        path: "{{ app_root }}"
+        state: directory
+        mode: '0755'
+
+    - name: Copy deploy_tenant.py to server
+      copy:
+        src: ../../deploy_tenant.py
+        dest: "{{ app_root }}/deploy_tenant.py"
+        mode: '0755'
+
+    - name: Install Docker and Docker Compose (if not present)
+      apt:
+        name:
+          - docker.io
+          - docker-compose
+        state: present
+        update_cache: yes
+
+    - name: Run tenant deployment
+      command: "python3 {{ app_root }}/deploy_tenant.py {{ tenant_name }} {{ org_type }}"
+      args:
+        chdir: "{{ app_root }}"
+      register: deploy_output
+
+    - name: Show deployment info
+      debug:
+        msg: "{{ deploy_output.stdout_lines }}"
