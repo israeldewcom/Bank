@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.middleware.httpsredirect import HTTPSRedirectMiddleware
 from fastapi_limiter import FastAPILimiter
-import redis.asyncio as redis          # <-- FIX: async Redis client
+import redis.asyncio as redis
 import asyncio
 from datetime import datetime, timezone
 from chronos_v5.config import Config
@@ -32,9 +32,10 @@ app.add_middleware(
     allowed_hosts=Config.ALLOWED_HOSTS
 )
 
+# ===== CORS FIX: Allow all origins for testing (remove "*" in production) =====
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"] if Config.ENV == "development" else Config.ALLOWED_HOSTS,
+    allow_origins=["*"],   # ← allows any frontend domain
     allow_methods=["*"],
     allow_headers=["*"],
 )
