@@ -29,6 +29,9 @@ class TradeIngest(BaseModel):
     def validate_settle_date(cls, v):
         try:
             dt = datetime.fromisoformat(v)
+            # Make it timezone-aware for comparison
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
             if dt < datetime.now(timezone.utc):
                 raise ValueError("Settle date must be in future")
             return v
