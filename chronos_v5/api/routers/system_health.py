@@ -112,7 +112,7 @@ def health_dashboard():
                 document.getElementById('disk-status').textContent = data.components.disk_usage || 'Unknown';
             }
             fetchHealth();
-            setInterval(fetchHealth, 30000); // refresh every 30s
+            setInterval(fetchHealth, 30000);
         </script>
     </body>
     </html>
