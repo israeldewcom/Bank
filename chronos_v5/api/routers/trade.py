@@ -32,8 +32,11 @@ class TradeIngest(BaseModel):
             # Make it timezone-aware for comparison
             if dt.tzinfo is None:
                 dt = dt.replace(tzinfo=timezone.utc)
+            else:
+                dt = dt.astimezone(timezone.utc)
             if dt < datetime.now(timezone.utc):
                 raise ValueError("Settle date must be in future")
+            # Return the original string – repository will parse and convert to UTC naive
             return v
         except ValueError as e:
             raise ValueError(f"Invalid settle_date: {e}")
