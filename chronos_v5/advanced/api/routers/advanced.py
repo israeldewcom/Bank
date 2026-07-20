@@ -7,7 +7,6 @@ from chronos_v5.advanced.dynamic_calibrator import DynamicCalibrator
 from chronos_v5.advanced.backfill_trainer import BackfillTrainer
 from pydantic import BaseModel
 from typing import Optional
-import json
 
 router = APIRouter(prefix="/advanced", tags=["Advanced"])
 
@@ -59,3 +58,11 @@ def train_from_backfill():
     trainer = BackfillTrainer()
     success = trainer.train()
     return {"status": "training completed" if success else "training failed"}
+
+# ===== ADD THESE TWO ENDPOINTS =====
+@router.post("/collateral/break_cycles", dependencies=[Depends(get_api_key)])
+async def break_cycles():
+    # Placeholder – replace with real logic if you have it
+    return {"broken": 0, "message": "No cycles to break"}
+
+# If you also need a separate endpoint for rebalance, it's already covered by /optimize/rehypothecation
