@@ -10,6 +10,14 @@ class TradeRepository:
         self.db = SyncSessionLocal()
 
     def insert(self, trade_data: dict, idempotency_key: str = None) -> str:
+        # Parse settle_date and convert to UTC naive
+        settle_dt = datetime.fromisoformat(trade_data['settle_date'])
+        if settle_dt.tzinfo is None:
+            settle_dt = settle_dt.replace(tzinfo=timezone.utc)
+        else:
+            settle_dt = settle_dt.astimezone(timezone.utc)
+        settle_dt = settle_dt.replace(tzinfo=None)  # store as UTC naive
+
         trade = Trade(
             id=trade_data.get('id', str(uuid.uuid4())),
             desk=trade_data['desk'],
@@ -17,7 +25,7 @@ class TradeRepository:
             instrument_type=trade_data.get('instrument_type'),
             currency=trade_data['currency'],
             notional=trade_data['notional'],
-            settle_date=datetime.fromisoformat(trade_data['settle_date']),
+            settle_date=settle_dt,
             idempotency_key=idempotency_key
         )
         self.db.add(trade)
@@ -37,6 +45,14 @@ class TradeRepository:
 
 class TradeRepositoryAsync:
     async def insert(self, trade_data: dict, idempotency_key: str = None) -> str:
+        # Parse settle_date and convert to UTC naive
+        settle_dt = datetime.fromisoformat(trade_data['settle_date'])
+        if settle_dt.tzinfo is None:
+            settle_dt = settle_dt.replace(tzinfo=timezone.utc)
+        else:
+            settle_dt = settle_dt.astimezone(timezone.utc)
+        settle_dt = settle_dt.replace(tzinfo=None)
+
         async with AsyncSessionLocal() as session:
             trade = Trade(
                 id=trade_data.get('id', str(uuid.uuid4())),
@@ -45,7 +61,7 @@ class TradeRepositoryAsync:
                 instrument_type=trade_data.get('instrument_type'),
                 currency=trade_data['currency'],
                 notional=trade_data['notional'],
-                settle_date=datetime.fromisoformat(trade_data['settle_date']),
+                settle_date=settle_dt,
                 idempotency_key=idempotency_key
             )
             session.add(trade)
