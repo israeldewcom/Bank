@@ -77,6 +77,7 @@ from chronos_v5.api.routers.websocket import router as websocket_router
 from chronos_v5.api.routers.admin import router as admin_router
 from chronos_v5.api.routers.system_health import router as system_health_router
 
+# Include routers – system_health_router already has prefix "/system" in its own definition
 app.include_router(trade_router, prefix="/trade", tags=["Trade"])
 app.include_router(collateral_router, prefix="/collateral", tags=["Collateral"])
 app.include_router(risk_router, prefix="/risk", tags=["Risk"])
@@ -89,7 +90,7 @@ app.include_router(execution_router, prefix="/execution", tags=["Execution"])
 app.include_router(nibss_router, prefix="/nibss", tags=["NIBSS"])
 app.include_router(websocket_router, prefix="/ws", tags=["WebSocket"])
 app.include_router(admin_router, prefix="/admin", tags=["Admin"])
-app.include_router(system_health_router, prefix="/system", tags=["System"])
+app.include_router(system_health_router)  # No extra prefix – router already has "/system"
 
 if Config.ENV != "production" or os.getenv("ADVANCED_FEATURES_ENABLED", "false").lower() == "true":
     try:
@@ -145,6 +146,7 @@ async def meta_dashboard():
 
 @app.get("/flower/api/tasks")
 async def flower_tasks():
+    # Return empty list – frontend will treat as no tasks
     return {}
 
 @app.on_event("startup")
