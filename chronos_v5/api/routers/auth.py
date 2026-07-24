@@ -1,10 +1,11 @@
 # chronos_v5/api/routers/auth.py
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi_limiter.depends import RateLimiter
 from pydantic import BaseModel, EmailStr
-from typing import Optional
 from chronos_v5.services.auth_service import AuthService
 from chronos_v5.api.dependencies.auth_deps import get_current_user, get_tenant_from_request
 from chronos_v5.models import User
+from chronos_v5.config import Config
 from chronos_v5.logger_setup import logger
 
 router = APIRouter()
@@ -17,7 +18,7 @@ class RegisterRequest(BaseModel):
 class LoginRequest(BaseModel):
     email: EmailStr
     password: str
-    device_fingerprint: Optional[str] = None
+    device_fingerprint: str  # now required
 
 class PairRequest(BaseModel):
     email: EmailStr
@@ -25,7 +26,10 @@ class PairRequest(BaseModel):
     device_name: str
     device_fingerprint: str
 
-@router.post("/register")
+@router.post(
+    "/register",
+    dependencies=[Depends(RateLimiter(times=5, seconds=3600))]  # 5 per hour
+)
 def register(req: RegisterRequest, request: Request):
     tenant = get_tenant_from_request(request)
     service = AuthService()
@@ -35,7 +39,10 @@ def register(req: RegisterRequest, request: Request):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-@router.post("/login")
+@router.post(
+    "/login",
+    dependencies=[Depends(RateLimiter(times=10, seconds=60))]  # 10 per minute
+)
 def login(req: LoginRequest):
     service = AuthService()
     try:
@@ -48,7 +55,7 @@ def login(req: LoginRequest):
 def request_pairing_code(
     request: Request,
     device_name: str,
-    current_user: User = Depends(get_current_user)  # <-- fixed dependency
+    current_user: User = Depends(get_current_user)
 ):
     service = AuthService()
     code = service.create_pairing_code(current_user.id, device_name)
