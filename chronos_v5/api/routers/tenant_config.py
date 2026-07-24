@@ -21,6 +21,9 @@ class ConfigUpdateRequest(BaseModel):
 
 @router.get("/")
 def get_config(current_user: User = Depends(get_current_user)):
+    """
+    Get tenant configuration. Sensitive API keys are masked.
+    """
     service = TenantConfigService()
     config = service.get_config(current_user.tenant)
     # Mask sensitive fields
@@ -30,9 +33,15 @@ def get_config(current_user: User = Depends(get_current_user)):
     return config
 
 @router.put("/")
-def update_config(req: ConfigUpdateRequest, current_user: User = Depends(get_current_user)):
+def update_config(
+    req: ConfigUpdateRequest,
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Update tenant configuration. Requires admin or developer role.
+    """
     if current_user.role not in ("admin", "developer"):
-        raise HTTPException(status_code=403, detail="Insufficient permissions")
+        raise HTTPException(status_code=403, detail="Insufficient permissions – admin or developer required")
     service = TenantConfigService()
     updates = req.dict(exclude_unset=True)
     service.update_config(current_user.tenant, updates)
