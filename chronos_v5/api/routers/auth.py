@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi_limiter.depends import RateLimiter
 from pydantic import BaseModel, EmailStr
 from chronos_v5.services.auth_service import AuthService
-from chronos_v5.api.dependencies.auth_deps import get_current_user, get_tenant_from_request
+from chronos_v5.api.dependencies import get_current_user, get_tenant_from_request
 from chronos_v5.models import User
 from chronos_v5.config import Config
 from chronos_v5.logger_setup import logger
@@ -18,7 +18,7 @@ class RegisterRequest(BaseModel):
 class LoginRequest(BaseModel):
     email: EmailStr
     password: str
-    device_fingerprint: str  # now required
+    device_fingerprint: str
 
 class PairRequest(BaseModel):
     email: EmailStr
@@ -28,7 +28,7 @@ class PairRequest(BaseModel):
 
 @router.post(
     "/register",
-    dependencies=[Depends(RateLimiter(times=5, seconds=3600))]  # 5 per hour
+    dependencies=[Depends(RateLimiter(times=5, seconds=3600))]
 )
 def register(req: RegisterRequest, request: Request):
     tenant = get_tenant_from_request(request)
@@ -41,7 +41,7 @@ def register(req: RegisterRequest, request: Request):
 
 @router.post(
     "/login",
-    dependencies=[Depends(RateLimiter(times=10, seconds=60))]  # 10 per minute
+    dependencies=[Depends(RateLimiter(times=10, seconds=60))]
 )
 def login(req: LoginRequest):
     service = AuthService()
@@ -49,6 +49,11 @@ def login(req: LoginRequest):
         token = service.login(req.email, req.password, req.device_fingerprint)
         return {"access_token": token, "token_type": "bearer"}
     except ValueError as e:
+        if "device" in str(e).lower():
+            raise HTTPException(
+                status_code=401,
+                detail=f"{str(e)}. If you haven't paired a device yet, use your API key to call /auth/pairing-code."
+            )
         raise HTTPException(status_code=401, detail=str(e))
 
 @router.post("/pairing-code")
