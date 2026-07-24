@@ -3,7 +3,8 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, EmailStr
 from typing import Optional
 from chronos_v5.services.auth_service import AuthService
-from chronos_v5.api.dependencies import get_tenant_from_request
+from chronos_v5.api.dependencies.auth_deps import get_current_user, get_tenant_from_request
+from chronos_v5.models import User
 from chronos_v5.logger_setup import logger
 
 router = APIRouter()
@@ -44,12 +45,13 @@ def login(req: LoginRequest):
         raise HTTPException(status_code=401, detail=str(e))
 
 @router.post("/pairing-code")
-def request_pairing_code(request: Request, device_name: str):
-    # This requires the user to be already authenticated via JWT
-    from chronos_v5.api.dependencies.auth_deps import get_current_user
-    user = get_current_user(request)
+def request_pairing_code(
+    request: Request,
+    device_name: str,
+    current_user: User = Depends(get_current_user)  # <-- fixed dependency
+):
     service = AuthService()
-    code = service.create_pairing_code(user.id, device_name)
+    code = service.create_pairing_code(current_user.id, device_name)
     return {"pairing_code": code, "expires_in": 300}
 
 @router.post("/pair-device")
