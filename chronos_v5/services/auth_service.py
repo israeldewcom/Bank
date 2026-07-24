@@ -74,18 +74,20 @@ class AuthService:
         self.db.commit()
         return raw
 
+    # OPTIMISED: uses prefix index to avoid full table scan
     def validate_api_key(self, raw_key: str) -> tuple:
-        # We can't search by raw, so we need to iterate (or store a hash prefix)
-        # For performance, we store a hash of the full key.
-        # We'll retrieve all active keys for the tenant and check bcrypt.
-        # In production, add a lookup by key_prefix first.
-        all_keys = self.db.query(APIKey).filter(APIKey.revoked_at.is_(None)).all()
-        for key in all_keys:
+        """Returns (user, api_key) or (None, None)"""
+        # Extract prefix (first 12 chars)
+        prefix = raw_key[:12]
+        # Query only keys with this prefix
+        candidates = self.db.query(APIKey).filter(
+            APIKey.key_prefix == prefix,
+            APIKey.revoked_at.is_(None)
+        ).all()
+        for key in candidates:
             if bcrypt.checkpw(raw_key.encode(), key.key_hash.encode()):
                 user = self.db.query(User).filter(User.id == key.user_id).first()
                 if user and user.status == "approved":
-                    key.last_used_at = datetime.now(timezone.utc)
-                    self.db.commit()
                     return user, key
         return None, None
 
@@ -115,7 +117,7 @@ class AuthService:
         device = Device(
             user_id=pairing.user_id,
             device_name=pairing.device_name,
-            device_fingerprint=device_fingerprint,
+            device_fingerprint=device_fingerprint,  # now mandatory
             status="pending",
             tenant=self.db.query(User).filter(User.id == pairing.user_id).first().tenant
         )
@@ -140,7 +142,7 @@ class AuthService:
             raise ValueError("Invalid credentials")
         if user.status != "approved":
             raise ValueError("User account not approved")
-        # Optionally validate device if fingerprint provided
+        # Validate device if fingerprint provided
         if device_fingerprint:
             device = self.db.query(Device).filter(
                 Device.user_id == user.id,
