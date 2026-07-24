@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from typing import Optional
 from chronos_v5.services.tenant_config_service import TenantConfigService
-from chronos_v5.api.dependencies.auth_deps import get_current_user
+from chronos_v5.api.dependencies import get_current_user
 from chronos_v5.models import User
 
 router = APIRouter()
@@ -21,12 +21,8 @@ class ConfigUpdateRequest(BaseModel):
 
 @router.get("/")
 def get_config(current_user: User = Depends(get_current_user)):
-    """
-    Get tenant configuration. Sensitive API keys are masked.
-    """
     service = TenantConfigService()
     config = service.get_config(current_user.tenant)
-    # Mask sensitive fields
     for key in ["bloomberg_api_key", "reuters_api_key", "alpha_vantage_key", "nibss_api_key"]:
         if config.get(key):
             config[key] = "********"
@@ -37,9 +33,6 @@ def update_config(
     req: ConfigUpdateRequest,
     current_user: User = Depends(get_current_user)
 ):
-    """
-    Update tenant configuration. Requires admin or developer role.
-    """
     if current_user.role not in ("admin", "developer"):
         raise HTTPException(status_code=403, detail="Insufficient permissions – admin or developer required")
     service = TenantConfigService()
