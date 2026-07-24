@@ -45,6 +45,13 @@ class Config:
     JWT_SECRET = os.getenv("JWT_SECRET", None)  # If not set, derive from SECRET_KEY
     JWT_EXPIRE_MINUTES = int(os.getenv("JWT_EXPIRE_MINUTES", "1440"))  # 24h
     ADMIN_EMAILS = os.getenv("ADMIN_EMAILS", "admin@chronos.local").split(",")
+    PASSWORD_MIN_LENGTH = int(os.getenv("PASSWORD_MIN_LENGTH", "12"))
+    PASSWORD_REQUIRE_UPPER = os.getenv("PASSWORD_REQUIRE_UPPER", "true").lower() == "true"
+    PASSWORD_REQUIRE_LOWER = os.getenv("PASSWORD_REQUIRE_LOWER", "true").lower() == "true"
+    PASSWORD_REQUIRE_DIGIT = os.getenv("PASSWORD_REQUIRE_DIGIT", "true").lower() == "true"
+    PASSWORD_REQUIRE_SPECIAL = os.getenv("PASSWORD_REQUIRE_SPECIAL", "true").lower() == "true"
+    AUTH_RATE_LIMIT_LOGIN = os.getenv("AUTH_RATE_LIMIT_LOGIN", "10 per minute")
+    AUTH_RATE_LIMIT_REGISTER = os.getenv("AUTH_RATE_LIMIT_REGISTER", "5 per hour")
 
     # ===== HSM =====
     HSM_ENABLED = os.getenv("HSM_ENABLED", "false").lower() == "true"
@@ -118,6 +125,7 @@ class Config:
     VAR_HORIZON = int(os.getenv("VAR_HORIZON", "1"))
     STRESS_SCENARIOS = os.getenv("STRESS_SCENARIOS", "2008,COVID,NIGERIA_2020").split(",")
     RISK_FALLBACK_VOLATILITY = float(os.getenv("RISK_FALLBACK_VOLATILITY", "0.02"))
+    RISK_DAILY_VOL_SCALING = float(os.getenv("RISK_DAILY_VOL_SCALING", "0.01"))
 
     # ===== SYNTHETIC & CYCLE =====
     SYNTHETIC_TRADES_COUNT = int(os.getenv("SYNTHETIC_TRADES_COUNT", "50000"))
@@ -186,7 +194,6 @@ class Config:
 
     @classmethod
     def validate(cls):
-        # Critical security checks
         if cls.ENV == "production":
             if cls.API_KEY is None or cls.API_KEY == "dev-key-change-me":
                 raise RuntimeError("CHRONOS_API_KEY must be set and secure in production")
@@ -200,26 +207,22 @@ class Config:
                 if not cls.BLOOMBERG_API_KEY and not cls.REUTERS_API_KEY:
                     raise RuntimeError("At least one market data source must be configured in production")
         else:
-            # For development, set defaults if missing
             if cls.API_KEY is None:
                 cls.API_KEY = "dev-key-change-me"
             if cls.SECRET_KEY is None:
                 cls.SECRET_KEY = "insecure-secret-key-for-dev-only"
 
-        # Build DATABASE_URL if not provided
         if cls.DATABASE_URL is None:
             if cls.DB_ENGINE == "postgresql":
                 cls.DATABASE_URL = f"postgresql://{cls.DB_USER}:{cls.DB_PASS}@{cls.DB_HOST}:{cls.DB_PORT}/{cls.DB_NAME}"
             else:
                 cls.DATABASE_URL = f"sqlite:///{cls.SQLITE_PATH}"
 
-        # Encryption key: derive from SECRET_KEY if not set
         if cls.ENCRYPTION_KEY is None and cls.ENCRYPT_SENSITIVE_FIELDS:
             kdf = PBKDF2HMAC(algorithm=hashes.SHA256(), length=32, salt=b'chronos_salt', iterations=100000)
             key = base64.urlsafe_b64encode(kdf.derive(cls.SECRET_KEY.encode()))
             cls.ENCRYPTION_KEY = key.decode()
 
-        # JWT secret: derive from SECRET_KEY if not set
         if cls.JWT_SECRET is None:
             kdf = PBKDF2HMAC(algorithm=hashes.SHA256(), length=32, salt=b'jwt_salt', iterations=100000)
             cls.JWT_SECRET = base64.urlsafe_b64encode(kdf.derive(cls.SECRET_KEY.encode())).decode()
