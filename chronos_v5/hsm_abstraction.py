@@ -26,36 +26,32 @@ class HSMAbstraction:
                 logger.error(f"HSM initialization failed: {e}")
                 raise
         else:
+            # Ensure encryption key is available (Config.validate() should have set it)
+            if Config.ENCRYPTION_KEY is None:
+                # Fallback: derive a deterministic key from SECRET_KEY (similar to validate)
+                from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+                from cryptography.hazmat.primitives import hashes
+                import base64
+                kdf = PBKDF2HMAC(algorithm=hashes.SHA256(), length=32, salt=b'chronos_salt', iterations=100000)
+                key = base64.urlsafe_b64encode(kdf.derive(Config.SECRET_KEY.encode()))
+                Config.ENCRYPTION_KEY = key.decode()
+                logger.warning("ENCRYPTION_KEY was None; derived from SECRET_KEY as fallback.")
             self._fernet_key = Config.ENCRYPTION_KEY.encode()
             self._fernet_cipher = Fernet(self._fernet_key)
-            # --- FIXED: Deterministic RSA key derived from SECRET_KEY ---
+            # Deterministic RSA key fallback
             self._private_key = self._derive_rsa_key(Config.SECRET_KEY.encode())
             self._public_key = self._private_key.public_key()
 
     def _derive_rsa_key(self, seed: bytes):
-        """Derive a deterministic RSA key from a seed using PBKDF2 and a PRNG."""
         from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
         from cryptography.hazmat.primitives.kdf.hkdf import HKDF
         import hashlib
-        # Use HKDF to expand seed into enough material for RSA key generation
-        # We'll use a fixed exponent and generate parameters deterministically
-        # This is a simplified approach; for production, consider using a persistent key file.
-        hkdf = HKDF(
-            algorithm=hashes.SHA256(),
-            length=1024,  # enough for deterministic generation
-            salt=b'rsa_deterministic_salt',
-            info=b'chronos_hsm_fallback'
-        )
-        key_material = hkdf.derive(seed)
-        # Use the key material to seed a PRNG (not cryptographically secure, but deterministic)
-        # Python's RSA generation uses random numbers; we can't easily seed it.
-        # Alternative: load a pre-generated key from disk.
+        # Use a persistent file for the key
         key_path = "/tmp/chronos_fallback_rsa.pem"
         if os.path.exists(key_path):
             with open(key_path, "rb") as f:
                 return serialization.load_pem_private_key(f.read(), password=None)
         else:
-            # Generate once and save
             private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
             pem = private_key.private_bytes(
                 encoding=serialization.Encoding.PEM,
@@ -97,7 +93,6 @@ class HSMAbstraction:
 
     def sign(self, data: bytes) -> bytes:
         if not self.enabled:
-            # Deterministic fallback using the persisted RSA key
             return self._private_key.sign(
                 data,
                 padding.PSS(mgf=padding.MGF1(hashes.SHA256()), salt_length=padding.PSS.MAX_LENGTH),
@@ -112,4 +107,5 @@ class HSMAbstraction:
             logger.error(f"HSM sign failed: {e}")
             raise
 
+# Instantiate once
 hsm = HSMAbstraction()
