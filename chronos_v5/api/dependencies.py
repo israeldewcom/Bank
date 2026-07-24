@@ -1,7 +1,7 @@
 # chronos_v5/api/dependencies.py
-from fastapi import Header, HTTPException, Request
+from fastapi import Header, HTTPException
 from chronos_v5.config import Config
-from chronos_v5.api.auth_deps import (
+from .auth_deps import (
     get_current_user,
     get_admin_user,
     get_tenant_from_request,
