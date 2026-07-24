@@ -1,3 +1,4 @@
+# chronos_v5/config.py
 import os
 import base64
 import secrets
@@ -39,6 +40,11 @@ class Config:
     ALLOWED_HOSTS = os.getenv("ALLOWED_HOSTS", "*").split(",")
     SECRET_KEY = os.getenv("SECRET_KEY", None)  # Must be set
     ENCRYPTION_KEY = os.getenv("ENCRYPTION_KEY", None)
+
+    # ===== NEW AUTH SETTINGS =====
+    JWT_SECRET = os.getenv("JWT_SECRET", None)  # If not set, derive from SECRET_KEY
+    JWT_EXPIRE_MINUTES = int(os.getenv("JWT_EXPIRE_MINUTES", "1440"))  # 24h
+    ADMIN_EMAILS = os.getenv("ADMIN_EMAILS", "admin@chronos.local").split(",")
 
     # ===== HSM =====
     HSM_ENABLED = os.getenv("HSM_ENABLED", "false").lower() == "true"
@@ -82,6 +88,7 @@ class Config:
     # ===== REAL NIBSS =====
     NIBSS_API_URL = os.getenv("NIBSS_API_URL", "https://api.nibss.gov.ng/v1")
     NIBSS_API_KEY = os.getenv("NIBSS_API_KEY", "")  # Must be set in production
+    NIBSS_TIMEOUT = int(os.getenv("NIBSS_TIMEOUT", "10"))
 
     # ===== LOGGING =====
     LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
@@ -110,6 +117,7 @@ class Config:
     VAR_CONFIDENCE = float(os.getenv("VAR_CONFIDENCE", "0.99"))
     VAR_HORIZON = int(os.getenv("VAR_HORIZON", "1"))
     STRESS_SCENARIOS = os.getenv("STRESS_SCENARIOS", "2008,COVID,NIGERIA_2020").split(",")
+    RISK_FALLBACK_VOLATILITY = float(os.getenv("RISK_FALLBACK_VOLATILITY", "0.02"))
 
     # ===== SYNTHETIC & CYCLE =====
     SYNTHETIC_TRADES_COUNT = int(os.getenv("SYNTHETIC_TRADES_COUNT", "50000"))
@@ -160,7 +168,7 @@ class Config:
 
     # ===== PERFORMANCE FEE =====
     PERFORMANCE_FEE_ENABLED = os.getenv("PERFORMANCE_FEE_ENABLED", "true").lower() == "true"
-    PERFORMANCE_FEE_PERCENT = float(os.getenv("PERFORMANCE_FEE_PERCENT", "0.10"))
+    PERFORMANCE_FEE_PERCENT = float(os.getenv("PERFORMANCE_FEE_PERCENT", "0.20"))
 
     # ===== NEW: ALPHA STRATEGY =====
     ALPHA_STRATEGY_ENABLED = os.getenv("ALPHA_STRATEGY_ENABLED", "false").lower() == "true"
@@ -210,6 +218,11 @@ class Config:
             kdf = PBKDF2HMAC(algorithm=hashes.SHA256(), length=32, salt=b'chronos_salt', iterations=100000)
             key = base64.urlsafe_b64encode(kdf.derive(cls.SECRET_KEY.encode()))
             cls.ENCRYPTION_KEY = key.decode()
+
+        # JWT secret: derive from SECRET_KEY if not set
+        if cls.JWT_SECRET is None:
+            kdf = PBKDF2HMAC(algorithm=hashes.SHA256(), length=32, salt=b'jwt_salt', iterations=100000)
+            cls.JWT_SECRET = base64.urlsafe_b64encode(kdf.derive(cls.SECRET_KEY.encode())).decode()
 
         if cls.ASYNC_DB and cls.DB_ENGINE != "postgresql":
             raise RuntimeError("ASYNC_DB requires PostgreSQL with asyncpg driver")
