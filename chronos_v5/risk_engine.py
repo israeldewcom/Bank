@@ -28,7 +28,6 @@ class RiskEngine:
         return np.mean(returns) * (1 + shock)
 
     def compute_all(self, desk=None):
-        # Fetch actual historical returns from trades and market data
         query = self.db.query(Trade).filter(Trade.created_at > datetime.now() - timedelta(days=30))
         if desk:
             query = query.filter(Trade.desk == desk)
@@ -37,7 +36,6 @@ class RiskEngine:
             logger.info("No trades for risk computation")
             return None
 
-        # Compute actual daily PnL changes using market data
         pnl_changes = []
         for t in trades:
             market_data = self.db.query(MarketDataPoint).filter(
@@ -51,10 +49,10 @@ class RiskEngine:
                 change = (end_price - start_price) / start_price if start_price != 0 else 0
                 pnl_changes.append(t.notional * change)
             else:
-                # --- FIXED: Use a conservative static volatility instead of random simulation ---
-                vol = Config.RISK_FALLBACK_VOLATILITY
-                # Use the notional as a proxy for typical daily move
-                change = t.notional * vol * 0.01  # 1% of notional as conservative daily move
+                # Use historical volatility from market data, or fallback to config
+                vol = self._get_historical_volatility(t.instrument_type)
+                # Use a conservative daily move: notional * vol * 1% (as a scaling)
+                change = t.notional * vol * 0.01
                 pnl_changes.append(change)
                 logger.debug(f"Using fallback volatility for trade {t.id}")
 
