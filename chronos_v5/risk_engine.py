@@ -1,6 +1,5 @@
 # chronos_v5/risk_engine.py
 import numpy as np
-import pandas as pd
 from chronos_v5.config import Config
 from chronos_v5.database import SyncSessionLocal
 from chronos_v5.models import RiskMetrics, Trade, MarketDataPoint
@@ -37,32 +36,48 @@ class RiskEngine:
             return None
 
         pnl_changes = []
+        estimated_count = 0
+        total_notional = 0.0
+
         for t in trades:
             market_data = self.db.query(MarketDataPoint).filter(
                 MarketDataPoint.symbol == t.instrument_type,
                 MarketDataPoint.timestamp >= t.created_at - timedelta(days=1),
                 MarketDataPoint.timestamp <= t.created_at + timedelta(days=1)
             ).order_by(MarketDataPoint.timestamp).all()
+
             if len(market_data) >= 2:
                 start_price = market_data[0].price
                 end_price = market_data[-1].price
                 change = (end_price - start_price) / start_price if start_price != 0 else 0
                 pnl_changes.append(t.notional * change)
+                total_notional += t.notional
             else:
-                # Use historical volatility from market data, or fallback to config
-                vol = self._get_historical_volatility(t.instrument_type)
-                # Use a conservative daily move: notional * vol * 1% (as a scaling)
-                change = t.notional * vol * 0.01
-                pnl_changes.append(change)
-                logger.debug(f"Using fallback volatility for trade {t.id}")
+                # Exclude trade from risk calculation – log and count
+                estimated_count += 1
+                logger.debug(f"Trade {t.id} excluded from VaR – no market data for {t.instrument_type}")
 
         if not pnl_changes:
-            return None
+            logger.warning("No trades with market data; risk metrics cannot be computed.")
+            # Return a metrics row indicating data quality issue
+            return {
+                "desk": desk or "TOTAL",
+                "var_99": None,
+                "expected_shortfall": None,
+                "stress_loss": None,
+                "capital_usage": None,
+                "data_quality": {
+                    "total_trades": len(trades),
+                    "estimated_trades": estimated_count,
+                    "message": "No trades had market data; VaR not computed"
+                }
+            }
 
-        returns = np.array(pnl_changes) / sum(t.notional for t in trades)
+        returns = np.array(pnl_changes) / total_notional if total_notional > 0 else np.array(pnl_changes)
         var = self.compute_var(returns, Config.VAR_CONFIDENCE)
         es = self.compute_expected_shortfall(returns, Config.VAR_CONFIDENCE)
         stress = self.compute_stress_loss(returns, "NIGERIA_2020")
+
         metric = RiskMetrics(
             desk=desk or "TOTAL",
             var_99=var,
@@ -72,17 +87,21 @@ class RiskEngine:
         )
         self.db.add(metric)
         self.db.commit()
-        logger.info(f"Risk metrics computed for {desk or 'TOTAL'}")
-        return metric
+        logger.info(f"Risk metrics computed for {desk or 'TOTAL'} (excluded {estimated_count} trades with no market data)")
 
-    def _get_historical_volatility(self, instrument_type):
-        cutoff = datetime.now() - timedelta(days=30)
-        data = self.db.query(MarketDataPoint).filter(
-            MarketDataPoint.symbol == instrument_type,
-            MarketDataPoint.timestamp > cutoff
-        ).order_by(MarketDataPoint.timestamp).all()
-        if len(data) > 1:
-            prices = [d.price for d in data]
-            returns = np.diff(prices) / prices[:-1]
-            return np.std(returns) if len(returns) > 0 else Config.RISK_FALLBACK_VOLATILITY
-        return Config.RISK_FALLBACK_VOLATILITY
+        # Attach data quality info to the returned object if needed
+        # We'll return a dict with metrics plus quality flag
+        result = {
+            "desk": metric.desk,
+            "var_99": metric.var_99,
+            "expected_shortfall": metric.expected_shortfall,
+            "stress_loss": metric.stress_loss,
+            "capital_usage": metric.capital_usage,
+            "timestamp": metric.timestamp,
+            "data_quality": {
+                "total_trades": len(trades),
+                "estimated_trades": estimated_count,
+                "message": f"Excluded {estimated_count} trades with no market data"
+            }
+        }
+        return result
