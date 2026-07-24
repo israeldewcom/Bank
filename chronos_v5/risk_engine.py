@@ -1,3 +1,4 @@
+# chronos_v5/risk_engine.py
 import numpy as np
 import pandas as pd
 from chronos_v5.config import Config
@@ -39,7 +40,6 @@ class RiskEngine:
         # Compute actual daily PnL changes using market data
         pnl_changes = []
         for t in trades:
-            # Get market prices around trade date
             market_data = self.db.query(MarketDataPoint).filter(
                 MarketDataPoint.symbol == t.instrument_type,
                 MarketDataPoint.timestamp >= t.created_at - timedelta(days=1),
@@ -51,11 +51,12 @@ class RiskEngine:
                 change = (end_price - start_price) / start_price if start_price != 0 else 0
                 pnl_changes.append(t.notional * change)
             else:
-                # Fallback to historical volatility if no market data
-                # Use average volatility from market data table
-                vol = self._get_historical_volatility(t.instrument_type)
-                change = np.random.normal(0, vol)  # Simulate with historical vol
-                pnl_changes.append(t.notional * change)
+                # --- FIXED: Use a conservative static volatility instead of random simulation ---
+                vol = Config.RISK_FALLBACK_VOLATILITY
+                # Use the notional as a proxy for typical daily move
+                change = t.notional * vol * 0.01  # 1% of notional as conservative daily move
+                pnl_changes.append(change)
+                logger.debug(f"Using fallback volatility for trade {t.id}")
 
         if not pnl_changes:
             return None
@@ -77,7 +78,6 @@ class RiskEngine:
         return metric
 
     def _get_historical_volatility(self, instrument_type):
-        # Get average daily return volatility from market_data for last 30 days
         cutoff = datetime.now() - timedelta(days=30)
         data = self.db.query(MarketDataPoint).filter(
             MarketDataPoint.symbol == instrument_type,
@@ -86,5 +86,5 @@ class RiskEngine:
         if len(data) > 1:
             prices = [d.price for d in data]
             returns = np.diff(prices) / prices[:-1]
-            return np.std(returns) if len(returns) > 0 else 0.02
-        return 0.02  # default
+            return np.std(returns) if len(returns) > 0 else Config.RISK_FALLBACK_VOLATILITY
+        return Config.RISK_FALLBACK_VOLATILITY
