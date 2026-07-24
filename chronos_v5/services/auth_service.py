@@ -2,6 +2,7 @@
 import bcrypt
 import secrets
 import uuid
+import re
 from datetime import datetime, timedelta, timezone
 from chronos_v5.database import SyncSessionLocal
 from chronos_v5.models import User, APIKey, Device, PairingCode
@@ -20,9 +21,23 @@ class AuthService:
     def verify_password(self, password: str, hashed: str) -> bool:
         return bcrypt.checkpw(password.encode(), hashed.encode())
 
+    def validate_password_policy(self, password: str) -> bool:
+        if len(password) < Config.PASSWORD_MIN_LENGTH:
+            raise ValueError(f"Password must be at least {Config.PASSWORD_MIN_LENGTH} characters")
+        if Config.PASSWORD_REQUIRE_UPPER and not re.search(r'[A-Z]', password):
+            raise ValueError("Password must contain at least one uppercase letter")
+        if Config.PASSWORD_REQUIRE_LOWER and not re.search(r'[a-z]', password):
+            raise ValueError("Password must contain at least one lowercase letter")
+        if Config.PASSWORD_REQUIRE_DIGIT and not re.search(r'\d', password):
+            raise ValueError("Password must contain at least one digit")
+        if Config.PASSWORD_REQUIRE_SPECIAL and not re.search(r'[!@#$%^&*(),.?":{}|<>]', password):
+            raise ValueError("Password must contain at least one special character")
+        return True
+
     def register_user(self, email: str, password: str, full_name: str, tenant: str = "default"):
         if self.db.query(User).filter(User.email == email).first():
             raise ValueError("Email already registered")
+        self.validate_password_policy(password)
         user = User(
             email=email,
             hashed_password=self.hash_password(password),
@@ -46,7 +61,6 @@ class AuthService:
         user.status = "approved"
         user.approved_by = admin_id
         user.approved_at = datetime.now(timezone.utc)
-        # Generate API key automatically
         raw_key = self.generate_api_key(user.id)
         self.db.commit()
         logger.info(f"User {user.email} approved by admin {admin_id}")
@@ -61,7 +75,7 @@ class AuthService:
         logger.info(f"User {user.email} rejected")
 
     def generate_api_key(self, user_id: uuid.UUID) -> str:
-        raw = secrets.token_urlsafe(32)  # 43 characters
+        raw = secrets.token_urlsafe(32)
         prefix = raw[:12]
         hashed = bcrypt.hashpw(raw.encode(), bcrypt.gensalt()).decode()
         key = APIKey(
@@ -74,12 +88,8 @@ class AuthService:
         self.db.commit()
         return raw
 
-    # OPTIMISED: uses prefix index to avoid full table scan
     def validate_api_key(self, raw_key: str) -> tuple:
-        """Returns (user, api_key) or (None, None)"""
-        # Extract prefix (first 12 chars)
         prefix = raw_key[:12]
-        # Query only keys with this prefix
         candidates = self.db.query(APIKey).filter(
             APIKey.key_prefix == prefix,
             APIKey.revoked_at.is_(None)
@@ -92,7 +102,6 @@ class AuthService:
         return None, None
 
     def create_pairing_code(self, user_id: uuid.UUID, device_name: str) -> str:
-        # Generate 6-digit numeric code
         code = f"{secrets.randbelow(1000000):06d}"
         expires = datetime.now(timezone.utc) + timedelta(minutes=5)
         pairing = PairingCode(
@@ -117,7 +126,7 @@ class AuthService:
         device = Device(
             user_id=pairing.user_id,
             device_name=pairing.device_name,
-            device_fingerprint=device_fingerprint,  # now mandatory
+            device_fingerprint=device_fingerprint,
             status="pending",
             tenant=self.db.query(User).filter(User.id == pairing.user_id).first().tenant
         )
@@ -136,22 +145,28 @@ class AuthService:
         self.db.commit()
         return device
 
-    def login(self, email: str, password: str, device_fingerprint: str = None):
+    def login(self, email: str, password: str, device_fingerprint: str):
+        """
+        Login requires a valid approved device fingerprint.
+        """
+        if not device_fingerprint:
+            raise ValueError("Device fingerprint is required")
         user = self.db.query(User).filter(User.email == email).first()
         if not user or not self.verify_password(password, user.hashed_password):
             raise ValueError("Invalid credentials")
         if user.status != "approved":
             raise ValueError("User account not approved")
-        # Validate device if fingerprint provided
-        if device_fingerprint:
-            device = self.db.query(Device).filter(
-                Device.user_id == user.id,
-                Device.device_fingerprint == device_fingerprint,
-                Device.status == "approved"
-            ).first()
-            if not device:
-                raise ValueError("Device not approved")
-            device.last_used_at = datetime.now(timezone.utc)
-            self.db.commit()
+
+        # Validate device
+        device = self.db.query(Device).filter(
+            Device.user_id == user.id,
+            Device.device_fingerprint == device_fingerprint,
+            Device.status == "approved"
+        ).first()
+        if not device:
+            raise ValueError("Device not approved or does not exist")
+        device.last_used_at = datetime.now(timezone.utc)
+        self.db.commit()
+
         token = create_jwt(str(user.id), user.tenant, user.role)
         return token
