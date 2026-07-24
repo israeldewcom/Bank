@@ -1,12 +1,16 @@
+# chronos_v5/models.py
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy import (
     Column, String, Float, Integer, Boolean, DateTime,
-    Text, BigInteger, ForeignKey, Index, JSON
+    Text, BigInteger, ForeignKey, Index, JSON, Enum as SQLAEnum
 )
 from datetime import datetime, timezone
-import bcrypt
+import uuid
+from sqlalchemy.dialects.postgresql import UUID
 
 Base = declarative_base()
+
+# === EXISTING TABLES (unchanged) ===
 
 class Trade(Base):
     __tablename__ = "trades"
@@ -23,6 +27,7 @@ class Trade(Base):
     price_quote = Column(JSON, nullable=True)
     idempotency_key = Column(String(100), unique=True, nullable=True)
     encrypted_counterparty = Column(Text, nullable=True)
+    tenant = Column(String(50), default="default", nullable=False, index=True)  # NEW
 
 class Counterparty(Base):
     __tablename__ = "counterparties"
@@ -52,6 +57,7 @@ class PnLAttribution(Base):
     currency = Column(String(10), default="NGN")
     timestamp = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     metadata_json = Column(Text, nullable=True)
+    tenant = Column(String(50), default="default", nullable=False, index=True)  # NEW
 
 class CollateralHolding(Base):
     __tablename__ = "collateral_holdings"
@@ -105,22 +111,66 @@ class RiskMetrics(Base):
     capital_usage = Column(Float)
     timestamp = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
-# ===== NEW USER MODEL =====
+
+# === NEW TABLES (AUTH + TENANT CONFIG) ===
+
 class User(Base):
     __tablename__ = "users"
-    id = Column(String(36), primary_key=True)
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     email = Column(String(255), unique=True, nullable=False, index=True)
-    password_hash = Column(String(255), nullable=False)
+    hashed_password = Column(String(255), nullable=False)
     full_name = Column(String(255))
-    tenant = Column(String(100), nullable=False, default="default")
-    role = Column(String(50), default="user")  # "admin" or "user"
-    is_active = Column(Boolean, default=True)
-    trial_expiry = Column(DateTime, nullable=True)  # Null means unlimited / paid
+    status = Column(SQLAEnum("pending", "approved", "rejected", "suspended", name="user_status"), default="pending")
+    role = Column(SQLAEnum("user", "developer", "admin", name="user_role"), default="user")
+    tenant = Column(String(50), default="default", nullable=False, index=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
-    last_login = Column(DateTime, nullable=True)
+    approved_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    approved_at = Column(DateTime, nullable=True)
 
-    def set_password(self, password: str):
-        self.password_hash = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+class APIKey(Base):
+    __tablename__ = "api_keys"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    key_prefix = Column(String(20), nullable=False)   # e.g. "chr_live_ab12"
+    key_hash = Column(String(255), nullable=False)    # bcrypt hash
+    tenant = Column(String(50), default="default", nullable=False, index=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    revoked_at = Column(DateTime, nullable=True)
+    last_used_at = Column(DateTime, nullable=True)
 
-    def check_password(self, password: str) -> bool:
-        return bcrypt.checkpw(password.encode(), self.password_hash.encode())
+class Device(Base):
+    __tablename__ = "devices"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    device_name = Column(String(255))
+    device_fingerprint = Column(String(255))  # hash of user-agent + client ID
+    status = Column(SQLAEnum("pending", "approved", "revoked", name="device_status"), default="pending")
+    tenant = Column(String(50), default="default", nullable=False, index=True)
+    requested_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    approved_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    approved_at = Column(DateTime, nullable=True)
+    last_used_at = Column(DateTime, nullable=True)
+
+class PairingCode(Base):
+    __tablename__ = "pairing_codes"
+    code = Column(String(10), primary_key=True)  # 6‑digit, short‑lived
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    device_name = Column(String(255))
+    expires_at = Column(DateTime, nullable=False)
+    consumed = Column(Boolean, default=False)
+
+class TenantConfig(Base):
+    __tablename__ = "tenant_configs"
+    tenant = Column(String(50), primary_key=True)
+    performance_fee_percent = Column(Float, default=0.20)
+    # Market data credentials (encrypted at rest)
+    bloomberg_api_key_enc = Column(Text, nullable=True)
+    reuters_api_key_enc = Column(Text, nullable=True)
+    alpha_vantage_key_enc = Column(Text, nullable=True)
+    nibss_api_key_enc = Column(Text, nullable=True)
+    cbn_openapi_url = Column(String(255), nullable=True)
+    ngx_api_url = Column(String(255), nullable=True)
+    # Override flags
+    use_global_model = Column(Boolean, default=True)
+    alpha_strategy_type = Column(String(50), nullable=True)
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
