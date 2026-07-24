@@ -194,6 +194,7 @@ class Config:
 
     @classmethod
     def validate(cls):
+        # Critical security checks
         if cls.ENV == "production":
             if cls.API_KEY is None or cls.API_KEY == "dev-key-change-me":
                 raise RuntimeError("CHRONOS_API_KEY must be set and secure in production")
@@ -206,23 +207,29 @@ class Config:
             if not cls.ALPHA_VANTAGE_API_KEY and not cls.YAHOO_FINANCE_ENABLED and not cls.CBN_OPENAPI_URL:
                 if not cls.BLOOMBERG_API_KEY and not cls.REUTERS_API_KEY:
                     raise RuntimeError("At least one market data source must be configured in production")
+            if cls.HSM_ENABLED and cls.HSM_PIN == "changeme":
+                raise RuntimeError("HSM_PIN must be changed from default in production")
         else:
+            # For development, set defaults if missing
             if cls.API_KEY is None:
                 cls.API_KEY = "dev-key-change-me"
             if cls.SECRET_KEY is None:
                 cls.SECRET_KEY = "insecure-secret-key-for-dev-only"
 
+        # Build DATABASE_URL if not provided
         if cls.DATABASE_URL is None:
             if cls.DB_ENGINE == "postgresql":
                 cls.DATABASE_URL = f"postgresql://{cls.DB_USER}:{cls.DB_PASS}@{cls.DB_HOST}:{cls.DB_PORT}/{cls.DB_NAME}"
             else:
                 cls.DATABASE_URL = f"sqlite:///{cls.SQLITE_PATH}"
 
+        # Encryption key: derive from SECRET_KEY if not set
         if cls.ENCRYPTION_KEY is None and cls.ENCRYPT_SENSITIVE_FIELDS:
             kdf = PBKDF2HMAC(algorithm=hashes.SHA256(), length=32, salt=b'chronos_salt', iterations=100000)
             key = base64.urlsafe_b64encode(kdf.derive(cls.SECRET_KEY.encode()))
             cls.ENCRYPTION_KEY = key.decode()
 
+        # JWT secret: derive from SECRET_KEY if not set
         if cls.JWT_SECRET is None:
             kdf = PBKDF2HMAC(algorithm=hashes.SHA256(), length=32, salt=b'jwt_salt', iterations=100000)
             cls.JWT_SECRET = base64.urlsafe_b64encode(kdf.derive(cls.SECRET_KEY.encode())).decode()
@@ -230,7 +237,11 @@ class Config:
         if cls.ASYNC_DB and cls.DB_ENGINE != "postgresql":
             raise RuntimeError("ASYNC_DB requires PostgreSQL with asyncpg driver")
 
+        # Only check CSV path if it's actually set (non-empty)
         if cls.REAL_DATA_CSV_PATH and not os.path.exists(cls.REAL_DATA_CSV_PATH):
             raise RuntimeError(f"REAL_DATA_CSV_PATH {cls.REAL_DATA_CSV_PATH} does not exist")
         if cls.EXECUTION_ENGINE_ENABLED and not cls.FIX_ENGINE_URL:
             raise RuntimeError("EXECUTION_ENGINE_ENABLED requires FIX_ENGINE_URL")
+
+# --- Ensure computed attributes are set at import time ---
+Config.validate()
