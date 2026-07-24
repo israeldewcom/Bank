@@ -11,7 +11,6 @@ from chronos_v5.api.middleware import CorrelationIdMiddleware
 from chronos_v5.api.routers import (
     trade, collateral, risk, backtest, model, audit, dashboard, pricing, execution, nibss, websocket
 )
-# NEW ROUTERS
 from chronos_v5.api.routers import auth, admin, dashboard_tenant, tenant_config
 from chronos_v5.logger_setup import logger
 from prometheus_client import generate_latest, REGISTRY
@@ -61,7 +60,7 @@ if Config.OTEL_ENABLED:
     except ImportError as e:
         logger.warning(f"OpenTelemetry import failed: {e}")
 
-# --- EXISTING ROUTERS (unchanged) ---
+# --- EXISTING ROUTERS ---
 app.include_router(trade.router, prefix="/trade", tags=["Trade"])
 app.include_router(collateral.router, prefix="/collateral", tags=["Collateral"])
 app.include_router(risk.router, prefix="/risk", tags=["Risk"])
@@ -74,7 +73,7 @@ app.include_router(execution.router, prefix="/execution", tags=["Execution"])
 app.include_router(nibss.router, prefix="/nibss", tags=["NIBSS"])
 app.include_router(websocket.router, prefix="/ws", tags=["WebSocket"])
 
-# --- NEW AUTH/TENANT ROUTERS (mounted without breaking old ones) ---
+# --- NEW AUTH/TENANT ROUTERS ---
 app.include_router(auth.router, prefix="/auth", tags=["Authentication"])
 app.include_router(admin.router, prefix="/admin", tags=["Admin"])
 app.include_router(dashboard_tenant.router, prefix="/tenant", tags=["Tenant Dashboard"])
@@ -90,9 +89,14 @@ if Config.ENV != "production" or os.getenv("ADVANCED_FEATURES_ENABLED", "false")
 
 @app.on_event("startup")
 async def startup():
-    redis_conn = redis.from_url(Config.REDIS_URL)
-    await FastAPILimiter.init(redis_conn)
-    logger.info("FastAPI-Limiter initialized")
+    # Conditionally initialize rate limiter only if not in test environment
+    if Config.ENV != "test":
+        redis_conn = redis.from_url(Config.REDIS_URL)
+        await FastAPILimiter.init(redis_conn)
+        logger.info("FastAPI-Limiter initialized")
+    else:
+        logger.info("Rate limiter disabled in test environment")
+
     if Config.ASYNC_DB:
         from chronos_v5.database import async_database
         if async_database:
