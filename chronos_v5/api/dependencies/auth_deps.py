@@ -1,4 +1,4 @@
-# chronos_v5/api/dependencies/auth_deps.py
+# chronos_v5/api/auth_deps.py
 from fastapi import Depends, HTTPException, status, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from datetime import datetime, timezone
