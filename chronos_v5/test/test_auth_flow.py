@@ -1,9 +1,10 @@
 # chronos_v5/tests/test_auth_flow.py
 import os
-import sys
 import pytest
 from fastapi.testclient import TestClient
+from unittest.mock import patch
 
+# ---- CRITICAL: Override config BEFORE importing app ----
 os.environ["DATABASE_URL"] = "sqlite:///:memory:"
 os.environ["REDIS_URL"] = "redis://localhost:6379/0"
 os.environ["CHRONOS_ENV"] = "test"
@@ -17,7 +18,6 @@ from chronos_v5.models import Base, User, Device
 from chronos_v5.config import Config
 from chronos_v5.services.auth_service import AuthService
 import uuid
-from unittest.mock import patch
 
 Config.validate()
 
@@ -57,32 +57,40 @@ def test_auth_flow(client):
     db.commit()
     admin_id = admin.id
 
-    # 3. Approve user
+    # 3. Approve user → API key generated
     raw_key = service.approve_user(uuid.UUID(user_id), admin_id)
     assert raw_key is not None
 
-    # 4. Login without fingerprint (should fail)
+    # 4. Login without fingerprint → validation error
     resp = client.post("/auth/login", json={
         "email": "test@bank.com",
         "password": "SecurePass123!"
     })
-    assert resp.status_code == 422  # validation error because device_fingerprint missing
+    assert resp.status_code == 422
 
-    # 5. Pair a device
-    # First login with JWT (we can't login yet because no device, so we use admin to create device?)
-    # Actually we need to create a pairing code – but that requires auth.
-    # Since we haven't logged in yet, we'll create a device directly in DB for test
-    device = Device(
-        user_id=uuid.UUID(user_id),
-        device_name="test_device",
-        device_fingerprint="test_fingerprint",
-        status="approved",
-        tenant="default"
+    # 5. Use API key to request pairing code
+    resp = client.post(
+        "/auth/pairing-code?device_name=test_device",
+        headers={"X-API-Key": raw_key}
     )
-    db.add(device)
-    db.commit()
+    assert resp.status_code == 200
+    code = resp.json()["pairing_code"]
 
-    # 6. Login with fingerprint
+    # 6. Pair device
+    resp = client.post("/auth/pair-device", json={
+        "email": "test@bank.com",
+        "pairing_code": code,
+        "device_name": "test_device",
+        "device_fingerprint": "test_fingerprint"
+    })
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "pending"
+
+    # 7. Admin approves device
+    device = db.query(Device).filter(Device.user_id == uuid.UUID(user_id)).first()
+    service.approve_device(device.id, admin_id)
+
+    # 8. Login with fingerprint
     resp = client.post("/auth/login", json={
         "email": "test@bank.com",
         "password": "SecurePass123!",
@@ -91,14 +99,23 @@ def test_auth_flow(client):
     assert resp.status_code == 200
     token = resp.json()["access_token"]
 
-    # 7. Access protected endpoint
+    # 9. Access protected endpoint with JWT
     resp = client.get("/tenant/savings", headers={"Authorization": f"Bearer {token}"})
     assert resp.status_code == 200
 
-    # 8. Access with API key
+    # 10. Access with API key
     resp = client.get("/tenant/savings", headers={"X-API-Key": raw_key})
     assert resp.status_code == 200
 
-    # 9. No credentials
+    # 11. No credentials → 401
     resp = client.get("/tenant/savings")
     assert resp.status_code == 401
+
+    # 12. Unpaired fingerprint → 401 with clear message
+    resp = client.post("/auth/login", json={
+        "email": "test@bank.com",
+        "password": "SecurePass123!",
+        "device_fingerprint": "unknown"
+    })
+    assert resp.status_code == 401
+    assert "device" in resp.json()["detail"].lower()
