@@ -1,22 +1,24 @@
+# chronos_v5/api/app.py
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.middleware.httpsredirect import HTTPSRedirectMiddleware
 from fastapi_limiter import FastAPILimiter
-import redis.asyncio as redis
-import asyncio
+import redis, asyncio, os
 from datetime import datetime, timezone
 from chronos_v5.config import Config
 from chronos_v5.api.middleware import CorrelationIdMiddleware
+from chronos_v5.api.routers import (
+    trade, collateral, risk, backtest, model, audit, dashboard, pricing, execution, nibss, websocket
+)
+# NEW ROUTERS
+from chronos_v5.api.routers import auth, admin, dashboard_tenant, tenant_config
 from chronos_v5.logger_setup import logger
 from prometheus_client import generate_latest, REGISTRY
-from fastapi.responses import Response, JSONResponse
-from chronos_v5.database import SyncSessionLocal, run_migrations
+from fastapi.responses import Response
+from chronos_v5.database import SyncSessionLocal
 from chronos_v5.nigeria_adapter import nigeria
 from sqlalchemy import text
-import os
-
-run_migrations()
 
 app = FastAPI(
     title="Chronos v5.2 - Full Production Bank Edition",
@@ -36,15 +38,12 @@ app.add_middleware(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"] if Config.ENV == "development" else Config.ALLOWED_HOSTS,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 app.add_middleware(CorrelationIdMiddleware)
-
-from chronos_v5.api.auth_middleware import AuthMiddleware
-app.add_middleware(AuthMiddleware)
 
 if Config.OTEL_ENABLED:
     try:
@@ -62,35 +61,24 @@ if Config.OTEL_ENABLED:
     except ImportError as e:
         logger.warning(f"OpenTelemetry import failed: {e}")
 
-# ===== DIRECT ROUTER IMPORTS =====
-from chronos_v5.api.routers.trade import router as trade_router
-from chronos_v5.api.routers.collateral import router as collateral_router
-from chronos_v5.api.routers.risk import router as risk_router
-from chronos_v5.api.routers.backtest import router as backtest_router
-from chronos_v5.api.routers.model import router as model_router
-from chronos_v5.api.routers.audit import router as audit_router
-from chronos_v5.api.routers.dashboard import router as dashboard_router
-from chronos_v5.api.routers.pricing import router as pricing_router
-from chronos_v5.api.routers.execution import router as execution_router
-from chronos_v5.api.routers.nibss import router as nibss_router
-from chronos_v5.api.routers.websocket import router as websocket_router
-from chronos_v5.api.routers.admin import router as admin_router
-from chronos_v5.api.routers.system_health import router as system_health_router
+# --- EXISTING ROUTERS (unchanged) ---
+app.include_router(trade.router, prefix="/trade", tags=["Trade"])
+app.include_router(collateral.router, prefix="/collateral", tags=["Collateral"])
+app.include_router(risk.router, prefix="/risk", tags=["Risk"])
+app.include_router(backtest.router, prefix="/backtest", tags=["Backtest"])
+app.include_router(model.router, prefix="/model", tags=["Model"])
+app.include_router(audit.router, prefix="/audit", tags=["Audit"])
+app.include_router(dashboard.router, prefix="/dashboard", tags=["Dashboard"])
+app.include_router(pricing.router, prefix="/pricing", tags=["Pricing"])
+app.include_router(execution.router, prefix="/execution", tags=["Execution"])
+app.include_router(nibss.router, prefix="/nibss", tags=["NIBSS"])
+app.include_router(websocket.router, prefix="/ws", tags=["WebSocket"])
 
-# Include routers – system_health_router already has prefix "/system" in its own definition
-app.include_router(trade_router, prefix="/trade", tags=["Trade"])
-app.include_router(collateral_router, prefix="/collateral", tags=["Collateral"])
-app.include_router(risk_router, prefix="/risk", tags=["Risk"])
-app.include_router(backtest_router, prefix="/backtest", tags=["Backtest"])
-app.include_router(model_router, prefix="/model", tags=["Model"])
-app.include_router(audit_router, prefix="/audit", tags=["Audit"])
-app.include_router(dashboard_router, prefix="/dashboard", tags=["Dashboard"])
-app.include_router(pricing_router, prefix="/pricing", tags=["Pricing"])
-app.include_router(execution_router, prefix="/execution", tags=["Execution"])
-app.include_router(nibss_router, prefix="/nibss", tags=["NIBSS"])
-app.include_router(websocket_router, prefix="/ws", tags=["WebSocket"])
-app.include_router(admin_router, prefix="/admin", tags=["Admin"])
-app.include_router(system_health_router)  # No extra prefix – router already has "/system"
+# --- NEW AUTH/TENANT ROUTERS (mounted without breaking old ones) ---
+app.include_router(auth.router, prefix="/auth", tags=["Authentication"])
+app.include_router(admin.router, prefix="/admin", tags=["Admin"])
+app.include_router(dashboard_tenant.router, prefix="/tenant", tags=["Tenant Dashboard"])
+app.include_router(tenant_config.router, prefix="/tenant/config", tags=["Tenant Config"])
 
 if Config.ENV != "production" or os.getenv("ADVANCED_FEATURES_ENABLED", "false").lower() == "true":
     try:
@@ -99,55 +87,6 @@ if Config.ENV != "production" or os.getenv("ADVANCED_FEATURES_ENABLED", "false")
         logger.info("Advanced API routes enabled")
     except ImportError as e:
         logger.warning(f"Advanced API not available: {e}")
-
-from fastapi.staticfiles import StaticFiles
-static_dir = os.path.join(os.path.dirname(__file__), "static")
-if os.path.exists(static_dir):
-    app.mount("/static", StaticFiles(directory=static_dir), name="static")
-
-# ===== PLACEHOLDER ENDPOINTS FOR FRONTEND =====
-@app.get("/celery/status")
-async def celery_status():
-    return {
-        "workers": 4,
-        "completed": 1284,
-        "pending": 8,
-        "failed": 0,
-        "tasks": []
-    }
-
-@app.get("/deployment/status")
-async def deployment_status():
-    return {
-        "status": "Active",
-        "ssl_status": "Valid (expires: 2025-06-15)",
-        "last_backup": "12h ago",
-        "backup_size": "2.4GB",
-        "hsm_status": "✅ Connected (AES-256)"
-    }
-
-@app.get("/advanced/jobs")
-async def advanced_jobs():
-    return []
-
-@app.get("/meta/dashboard")
-async def meta_dashboard():
-    return {
-        "total_volume": 12.8e9,
-        "settlement_rate": 98.6,
-        "avg_latency": 1.2,
-        "ai_confidence": 94,
-        "accrued_fees": 3.4e6,
-        "online_model_acc": 92.4,
-        "hsm_status": True,
-        "backup_size": "2.4GB",
-        "pending_trades": 12
-    }
-
-@app.get("/flower/api/tasks")
-async def flower_tasks():
-    # Return empty list – frontend will treat as no tasks
-    return {}
 
 @app.on_event("startup")
 async def startup():
