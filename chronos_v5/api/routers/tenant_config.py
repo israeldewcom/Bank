@@ -1,9 +1,10 @@
 # chronos_v5/api/routers/tenant_config.py
-from fastapi import APIRouter, Depends, Request, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from typing import Optional
 from chronos_v5.services.tenant_config_service import TenantConfigService
-from chronos_v5.api.dependencies.auth_deps import get_api_key_or_jwt
+from chronos_v5.api.dependencies.auth_deps import get_current_user
+from chronos_v5.models import User
 
 router = APIRouter()
 
@@ -19,29 +20,20 @@ class ConfigUpdateRequest(BaseModel):
     alpha_strategy_type: Optional[str] = None
 
 @router.get("/")
-def get_config(request: Request):
-    auth = request.state
-    tenant = auth.tenant if hasattr(auth, "tenant") else "default"
+def get_config(current_user: User = Depends(get_current_user)):
     service = TenantConfigService()
-    config = service.get_config(tenant)
+    config = service.get_config(current_user.tenant)
     # Mask sensitive fields
     for key in ["bloomberg_api_key", "reuters_api_key", "alpha_vantage_key", "nibss_api_key"]:
         if config.get(key):
-            config[key] = "********"  # show only masked
+            config[key] = "********"
     return config
 
 @router.put("/")
-def update_config(req: ConfigUpdateRequest, request: Request):
-    # Only admin or developer can update config
-    auth = request.state
-    if not hasattr(auth, "auth_type") or auth.auth_type != "jwt":
-        raise HTTPException(status_code=403, detail="JWT authentication required")
-    # Check role from JWT – we can fetch from user object if we extended get_api_key_or_jwt to include user
-    # For simplicity, we rely on the dependency to have set auth.user
-    if hasattr(auth, "user") and auth.user and auth.user.role in ("admin", "developer"):
-        tenant = auth.tenant
-        service = TenantConfigService()
-        updates = req.dict(exclude_unset=True)
-        service.update_config(tenant, updates)
-        return {"status": "updated"}
-    raise HTTPException(status_code=403, detail="Insufficient permissions")
+def update_config(req: ConfigUpdateRequest, current_user: User = Depends(get_current_user)):
+    if current_user.role not in ("admin", "developer"):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+    service = TenantConfigService()
+    updates = req.dict(exclude_unset=True)
+    service.update_config(current_user.tenant, updates)
+    return {"status": "updated"}
