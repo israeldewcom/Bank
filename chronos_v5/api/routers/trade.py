@@ -1,4 +1,5 @@
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
+# chronos_v5/api/routers/trade.py
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Request
 from fastapi_limiter.depends import RateLimiter
 from pydantic import BaseModel, Field, validator
 from typing import Optional
@@ -8,7 +9,7 @@ from chronos_v5.database import AsyncSessionLocal, async_database
 from chronos_v5.repositories.trade_repository import TradeRepositoryAsync
 from chronos_v5.services.predictor import SettlementPredictor
 from chronos_v5.pricing_engine import PricingEngine
-from chronos_v5.api.dependencies import get_api_key
+from chronos_v5.api.dependencies import get_api_key, get_tenant_from_request
 from chronos_v5.tasks import attribute_pnl, generate_alpha_signals
 from chronos_v5.config import Config
 import asyncio
@@ -29,14 +30,8 @@ class TradeIngest(BaseModel):
     def validate_settle_date(cls, v):
         try:
             dt = datetime.fromisoformat(v)
-            # Make it timezone-aware for comparison
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
-            else:
-                dt = dt.astimezone(timezone.utc)
             if dt < datetime.now(timezone.utc):
                 raise ValueError("Settle date must be in future")
-            # Return the original string – repository will parse and convert to UTC naive
             return v
         except ValueError as e:
             raise ValueError(f"Invalid settle_date: {e}")
@@ -50,23 +45,30 @@ class TradeResponse(BaseModel):
 
 @router.post("/ingest", dependencies=[Depends(get_api_key), Depends(RateLimiter(times=500, seconds=60))])
 async def ingest_trade_async(trade: TradeIngest,
-                             background_tasks: BackgroundTasks):
+                             background_tasks: BackgroundTasks,
+                             request: Request):
+    # Capture tenant from header (defaults to "default")
+    tenant = get_tenant_from_request(request)
     if not Config.ASYNC_DB or async_database is None:
         raise HTTPException(status_code=501, detail="Async DB not enabled")
     repo = TradeRepositoryAsync()
     existing = await repo.get_by_idempotency(trade.idempotency_key)
     if existing:
         return {"status": "DUPLICATE", "trade": existing}
-    trade_id = await repo.insert(trade.dict(), trade.idempotency_key)
+    # Pass tenant to repository (we'll add tenant to the model)
+    trade_dict = trade.dict()
+    trade_dict['tenant'] = tenant
+    trade_id = await repo.insert(trade_dict, trade.idempotency_key)
     predictor = SettlementPredictor()
-    prob = await predictor.predict_async(trade.dict())
-    await predictor.predict_and_store_async(trade.dict())
+    prob = await predictor.predict_async(trade_dict)
+    await predictor.predict_and_store_async(trade_dict)
     pricing = PricingEngine()
     price = await pricing.get_client_price_async(trade.counterparty_id, trade.instrument_type or 'UNKNOWN', trade.notional)
     background_tasks.add_task(generate_alpha_signals.delay)
     if prob > 0.15:
         avoided_cost = trade.notional * Config.EMERGENCY_BORROW_RATE
-        background_tasks.add_task(attribute_pnl.delay, trade_id, "AVOIDED_FAIL", avoided_cost * 0.5)
+        # Pass tenant to the PnL task
+        background_tasks.add_task(attribute_pnl.delay, trade_id, "AVOIDED_FAIL", avoided_cost * 0.5, tenant)
     return TradeResponse(
         status="INGESTED",
         trade_id=trade_id,
@@ -76,21 +78,24 @@ async def ingest_trade_async(trade: TradeIngest,
     )
 
 @router.post("/ingest_sync", dependencies=[Depends(get_api_key), Depends(RateLimiter(times=500, seconds=60))])
-def ingest_trade_sync(trade: TradeIngest, background_tasks: BackgroundTasks):
+def ingest_trade_sync(trade: TradeIngest, background_tasks: BackgroundTasks, request: Request):
     from chronos_v5.repositories.trade_repository import TradeRepository
+    tenant = get_tenant_from_request(request)
     repo = TradeRepository()
     existing = repo.get_by_idempotency(trade.idempotency_key)
     if existing:
         return {"status": "DUPLICATE", "trade": existing}
-    trade_id = repo.insert(trade.dict(), trade.idempotency_key)
+    trade_dict = trade.dict()
+    trade_dict['tenant'] = tenant
+    trade_id = repo.insert(trade_dict, trade.idempotency_key)
     predictor = SettlementPredictor()
-    prob = predictor.predict(trade.dict())
+    prob = predictor.predict(trade_dict)
     pricing = PricingEngine()
     price = pricing.get_client_price(trade.counterparty_id, trade.instrument_type or 'UNKNOWN', trade.notional)
     background_tasks.add_task(generate_alpha_signals.delay)
     if prob > 0.15:
         avoided_cost = trade.notional * Config.EMERGENCY_BORROW_RATE
-        background_tasks.add_task(attribute_pnl.delay, trade_id, "AVOIDED_FAIL", avoided_cost * 0.5)
+        background_tasks.add_task(attribute_pnl.delay, trade_id, "AVOIDED_FAIL", avoided_cost * 0.5, tenant)
     return TradeResponse(
         status="INGESTED",
         trade_id=trade_id,
