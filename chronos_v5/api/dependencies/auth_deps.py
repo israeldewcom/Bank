@@ -9,7 +9,7 @@ from chronos_v5.database import SyncSessionLocal
 from chronos_v5.models import User
 import uuid
 
-security = HTTPBearer(auto_error=False)  # Allow missing Bearer
+security = HTTPBearer(auto_error=False)
 
 def get_tenant_from_request(request: Request) -> str:
     return request.headers.get(Config.TENANT_HEADER, Config.DEFAULT_TENANT)
@@ -18,13 +18,6 @@ async def get_current_user(
     request: Request,
     credentials: HTTPAuthorizationCredentials = Depends(security)
 ):
-    """
-    Authenticate using either:
-    - X-API-Key header (legacy / new API keys)
-    - Bearer JWT token
-    Returns the User object and sets request.state.tenant
-    """
-    # 1. Check API Key header
     api_key = request.headers.get("X-API-Key")
     if api_key:
         auth_service = AuthService()
@@ -33,7 +26,6 @@ async def get_current_user(
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid API Key")
         if user.status != "approved":
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User not approved")
-        # Update last_used_at
         if key:
             key.last_used_at = datetime.now(timezone.utc)
             auth_service.db.commit()
@@ -41,7 +33,6 @@ async def get_current_user(
         request.state.auth_type = "api_key"
         return user
 
-    # 2. Check Bearer JWT
     if not credentials:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="No authentication provided")
     token = credentials.credentials
@@ -67,6 +58,5 @@ async def get_admin_user(current_user: User = Depends(get_current_user)):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin privileges required")
     return current_user
 
-# For backward compatibility with old endpoints that expect a simple tenant string
 async def get_tenant_from_auth(request: Request, user: User = Depends(get_current_user)):
     return user.tenant
