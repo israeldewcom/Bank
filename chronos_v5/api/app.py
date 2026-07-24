@@ -4,7 +4,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.middleware.httpsredirect import HTTPSRedirectMiddleware
 from fastapi_limiter import FastAPILimiter
-import redis, asyncio, os
+import redis.asyncio as aioredis  # <--- async Redis for limiter
+import redis  # <--- sync Redis for other parts (market data, etc.)
+import asyncio, os
 from datetime import datetime, timezone
 from chronos_v5.config import Config
 from chronos_v5.api.middleware import CorrelationIdMiddleware
@@ -89,13 +91,23 @@ if Config.ENV != "production" or os.getenv("ADVANCED_FEATURES_ENABLED", "false")
 
 @app.on_event("startup")
 async def startup():
-    # Conditionally initialize rate limiter only if not in test environment
-    if Config.ENV != "test":
-        redis_conn = redis.from_url(Config.REDIS_URL)
-        await FastAPILimiter.init(redis_conn)
-        logger.info("FastAPI-Limiter initialized")
+    # --- FastAPILimiter with async Redis ---
+    if Config.ENV == "test":
+        try:
+            # Use fakeredis async if available, else skip
+            from fakeredis import FakeRedis
+            # fakeredis doesn't have async support by default; use sync wrapper or skip
+            # Instead, we'll use a simple in-memory store for tests via a different approach.
+            # For now, we'll just use sync client in test mode (works with FastAPILimiter if we patch)
+            # But easiest: skip limiter in test mode by not initializing.
+            logger.info("Rate limiter disabled in test mode")
+        except ImportError:
+            logger.warning("fakeredis not installed; rate limiter disabled in test mode")
     else:
-        logger.info("Rate limiter disabled in test environment")
+        # Use async Redis client
+        redis_conn = await aioredis.from_url(Config.REDIS_URL, decode_responses=True)
+        await FastAPILimiter.init(redis_conn)
+        logger.info("FastAPI-Limiter initialized with async Redis")
 
     if Config.ASYNC_DB:
         from chronos_v5.database import async_database
