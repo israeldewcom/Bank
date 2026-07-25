@@ -1,4 +1,4 @@
- # chronos_v5/api/app.py
+# chronos_v5/api/app.py
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
@@ -11,7 +11,7 @@ import os
 import uuid
 import bcrypt
 import secrets
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from chronos_v5.config import Config
 from chronos_v5.api.middleware import CorrelationIdMiddleware
 from chronos_v5.api.routers import (
@@ -229,13 +229,13 @@ def run_self_test_db():
     """
     db = SyncSessionLocal()
     try:
-        # Ensure the trades table exists (should already)
         # Generate a unique idempotency key
         idempotency_key = f"self_test_{uuid.uuid4().hex}"
 
         # First insert – should succeed
         trade_id1 = str(uuid.uuid4())
         now = datetime.now(timezone.utc)
+        settle_date = now + timedelta(days=1)
         db.execute(
             text("""
                 INSERT INTO trades (id, desk, counterparty_id, instrument_type, currency, notional, settle_date, created_at, status, fail_probability, idempotency_key, tenant)
@@ -248,7 +248,7 @@ def run_self_test_db():
                 "instrument_type": "TEST",
                 "currency": "NGN",
                 "notional": 1000,
-                "settle_date": datetime.now(timezone.utc) + timedelta(days=1),
+                "settle_date": settle_date,
                 "created_at": now,
                 "status": "PENDING",
                 "fail_probability": 0.0,
@@ -273,7 +273,7 @@ def run_self_test_db():
                     "instrument_type": "TEST",
                     "currency": "NGN",
                     "notional": 1000,
-                    "settle_date": datetime.now(timezone.utc) + timedelta(days=1),
+                    "settle_date": settle_date,
                     "created_at": now,
                     "status": "PENDING",
                     "fail_probability": 0.0,
@@ -331,7 +331,6 @@ async def startup():
     # --- Self‑test (only if explicitly enabled) ---
     if os.getenv("RUN_SELFTEST", "false").lower() == "true":
         try:
-            # Run the DB test (synchronous)
             passed = run_self_test_db()
             if passed:
                 logger.info("✅ Self‑test PASSED – idempotency works (unique constraint enforced).")
