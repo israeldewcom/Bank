@@ -1,12 +1,11 @@
 # chronos_v5/models.py
 from sqlalchemy.ext.declarative import declarative_base
-from sqlchemy import (
+from sqlalchemy import (
     Column, String, Float, Integer, Boolean, DateTime,
     Text, BigInteger, ForeignKey, JSON, Enum as SQLAEnum
 )
 from datetime import datetime, timezone
 import uuid
-from sqlalchemy.dialects.postgresql import UUID
 
 Base = declarative_base()
 
