@@ -7,7 +7,6 @@ from chronos_v5.utils.jwt_utils import decode_jwt
 from chronos_v5.services.auth_service import AuthService
 from chronos_v5.database import SyncSessionLocal
 from chronos_v5.models import User
-import uuid
 
 security = HTTPBearer(auto_error=False)
 
@@ -43,7 +42,7 @@ async def get_current_user(
     if not user_id:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token payload")
     db = SyncSessionLocal()
-    user = db.query(User).filter(User.id == uuid.UUID(user_id)).first()
+    user = db.query(User).filter(User.id == user_id).first()
     db.close()
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
@@ -54,8 +53,8 @@ async def get_current_user(
     return user
 
 async def get_admin_user(current_user: User = Depends(get_current_user)):
-    # Since we don't have role, we'll allow any active user to act as admin for now
-    # In production, you'd have a dedicated admin user or separate table
+    # Since no role column, we treat any active user as admin for now.
+    # In production, you'd have a dedicated admin table or role column.
     return current_user
 
 async def get_tenant_from_auth(request: Request, user: User = Depends(get_current_user)):
