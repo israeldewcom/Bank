@@ -17,7 +17,6 @@ class AuthService:
         self._user_columns = self._detect_user_columns()
 
     def _detect_user_columns(self):
-        """Detect actual columns in the users table."""
         inspector = inspect(User)
         return [c.name for c in inspector.columns]
 
@@ -61,7 +60,6 @@ class AuthService:
             user_kwargs["status"] = "pending"
         if self._user_has_column("role"):
             user_kwargs["role"] = "user"
-        # If no status column, we assume active by default
         user = User(**user_kwargs)
         self.db.add(user)
         self.db.commit()
@@ -78,7 +76,6 @@ class AuthService:
                 raise ValueError("User is not pending")
             user.status = "approved"
         else:
-            # If no status, we assume approved by default – just set active
             if self._user_has_column("is_active"):
                 user.is_active = True
         if self._user_has_column("approved_by"):
@@ -126,13 +123,11 @@ class AuthService:
             if bcrypt.checkpw(raw_key.encode(), key.key_hash.encode()):
                 user = self.db.query(User).filter(User.id == key.user_id).first()
                 if user:
-                    # Check if user is active/approved
                     if self._user_has_column("status") and user.status in ("approved", "active"):
                         return user, key
                     elif self._user_has_column("is_active") and user.is_active:
                         return user, key
                     elif not self._user_has_column("status") and not self._user_has_column("is_active"):
-                        # No status or active columns – assume active if user exists
                         return user, key
         return None, None
 
@@ -186,14 +181,10 @@ class AuthService:
         user = self.db.query(User).filter(User.email == email).first()
         if not user or not self.verify_password(password, user.password_hash):
             raise ValueError("Invalid credentials")
-        # Check user active/approved
         if self._user_has_column("status") and user.status != "approved":
             raise ValueError("User account not approved")
-        elif self._user_has_column("is_active") and not user.is_active:
+        if self._user_has_column("is_active") and not user.is_active:
             raise ValueError("User account not active")
-        # Device check – only if devices table exists and has entries
-        if self._user_has_column("status"):  # just a rough check; we can test table existence
-            # We'll skip device check for now as it may cause issues
-            pass
+        # optional device check (skip for now)
         token = create_jwt(str(user.id), user.tenant, user.role if self._user_has_column("role") else "user")
         return token
