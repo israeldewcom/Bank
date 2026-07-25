@@ -54,7 +54,8 @@ class AuthService:
         return user
 
     def approve_user(self, user_id: str, admin_id: str):
-        user = self.db.query(User).filter(User.id == user_id).first()
+        # Ensure user_id is string
+        user = self.db.query(User).filter(User.id == str(user_id)).first()
         if not user:
             raise ValueError("User not found")
         user.is_active = True
@@ -64,7 +65,7 @@ class AuthService:
         return raw_key
 
     def reject_user(self, user_id: str):
-        user = self.db.query(User).filter(User.id == user_id).first()
+        user = self.db.query(User).filter(User.id == str(user_id)).first()
         if not user:
             raise ValueError("User not found")
         user.is_active = False
@@ -76,10 +77,10 @@ class AuthService:
         prefix = raw[:12]
         hashed = bcrypt.hashpw(raw.encode(), bcrypt.gensalt()).decode()
         key = APIKey(
-            user_id=user_id,
+            user_id=str(user_id),  # ensure string
             key_prefix=prefix,
             key_hash=hashed,
-            tenant=self.db.query(User).filter(User.id == user_id).first().tenant
+            tenant=self.db.query(User).filter(User.id == str(user_id)).first().tenant
         )
         self.db.add(key)
         self.db.commit()
@@ -94,7 +95,8 @@ class AuthService:
             ).all()
             for key in candidates:
                 if bcrypt.checkpw(raw_key.encode(), key.key_hash.encode()):
-                    user = self.db.query(User).filter(User.id == key.user_id).first()
+                    # Always convert to string for DB lookup
+                    user = self.db.query(User).filter(User.id == str(key.user_id)).first()
                     if user and user.is_active:
                         return user, key
             return None, None
@@ -108,7 +110,7 @@ class AuthService:
         expires = datetime.now(timezone.utc) + timedelta(minutes=5)
         pairing = PairingCode(
             code=code,
-            user_id=user_id,
+            user_id=str(user_id),
             device_name=device_name,
             expires_at=expires
         )
@@ -126,11 +128,11 @@ class AuthService:
             raise ValueError("Invalid or expired pairing code")
         pairing.consumed = True
         device = Device(
-            user_id=pairing.user_id,
+            user_id=str(pairing.user_id),
             device_name=pairing.device_name,
             device_fingerprint=device_fingerprint,
             status="pending",
-            tenant=self.db.query(User).filter(User.id == pairing.user_id).first().tenant
+            tenant=self.db.query(User).filter(User.id == str(pairing.user_id)).first().tenant
         )
         self.db.add(device)
         self.db.commit()
@@ -138,11 +140,11 @@ class AuthService:
         return device
 
     def approve_device(self, device_id: str, admin_id: str):
-        device = self.db.query(Device).filter(Device.id == device_id).first()
+        device = self.db.query(Device).filter(Device.id == str(device_id)).first()
         if not device:
             raise ValueError("Device not found")
         device.status = "approved"
-        device.approved_by = admin_id
+        device.approved_by = str(admin_id)
         device.approved_at = datetime.now(timezone.utc)
         self.db.commit()
         return device
@@ -164,5 +166,5 @@ class AuthService:
             raise ValueError("Device not approved or does not exist")
         device.last_used_at = datetime.now(timezone.utc)
         self.db.commit()
-        token = create_jwt(user.id, user.tenant, "user")  # no role column
+        token = create_jwt(user.id, user.tenant, "user")
         return token
