@@ -18,14 +18,12 @@ async def get_current_user(
     request: Request,
     credentials: HTTPAuthorizationCredentials = Depends(security)
 ):
-    # --- API Key authentication ---
     api_key = request.headers.get("X-API-Key")
     if api_key:
         auth_service = AuthService()
         user, key = auth_service.validate_api_key(api_key)
         if not user:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid API Key")
-        # validate_api_key already ensures user is active/approved
         if key:
             key.last_used_at = datetime.now(timezone.utc)
             auth_service.db.commit()
@@ -33,7 +31,6 @@ async def get_current_user(
         request.state.auth_type = "api_key"
         return user
 
-    # --- JWT authentication ---
     if not credentials:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="No authentication provided")
     token = credentials.credentials
@@ -48,12 +45,6 @@ async def get_current_user(
     db.close()
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
-    # Check user active/approved using the same logic as AuthService
-    auth_service = AuthService()
-    if auth_service._user_has_column("status") and user.status != "approved":
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User not approved")
-    if auth_service._user_has_column("is_active") and not user.is_active:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User not active")
     request.state.tenant = user.tenant
     request.state.auth_type = "jwt"
     return user
