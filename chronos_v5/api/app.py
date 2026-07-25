@@ -333,10 +333,10 @@ def run_self_test_db():
         db.close()
 
 # ============================================================
-# HTTP CONCURRENCY SELF‑TEST (background)
+# HTTP CONCURRENCY SELF‑TEST (background) – FIXED to use async endpoint
 # ============================================================
 async def run_http_concurrency_test():
-    """Background concurrency test – fires 50 requests after server is live."""
+    """Background concurrency test – fires 50 requests concurrently using the async endpoint."""
     await asyncio.sleep(5)  # give the server a moment to start
     base_url = "http://localhost:10000"
 
@@ -415,8 +415,9 @@ async def run_http_concurrency_test():
             "idempotency_key": idempotency_key
         }
         try:
+            # Use the async endpoint to avoid blocking the event loop
             resp = await client.post(
-                f"{base_url}/trade/ingest_sync",
+                f"{base_url}/trade/ingest",
                 json=payload,
                 headers={"X-API-Key": raw_key, "X-Tenant": "default"},
                 timeout=10.0
@@ -426,21 +427,23 @@ async def run_http_concurrency_test():
             return 0, {"error": str(e)}
 
     idempotency_key = f"concurrent_{uuid.uuid4().hex}"
-    # Use a timeout on the gather to prevent hanging indefinitely
+    start = datetime.now()
     try:
+        # Use a single client with connection pooling; gather all 50 tasks concurrently
         async with httpx.AsyncClient(timeout=30.0) as client:
             tasks = [send_trade(client, idempotency_key) for _ in range(50)]
-            results = await asyncio.wait_for(asyncio.gather(*tasks), timeout=60.0)
-    except asyncio.TimeoutError:
-        logger.error("⚠️ HTTP concurrency test timed out after 60 seconds.")
+            results = await asyncio.gather(*tasks)
+    except Exception as e:
+        logger.error(f"HTTP concurrency test gather failed: {e}")
         return
+    elapsed = (datetime.now() - start).total_seconds()
 
     successes = [r[1] for r in results if r[0] == 200]
     ingested = [r[1] for r in successes if r[1].get("status") == "INGESTED"]
     duplicates = [r[1] for r in successes if r[1].get("status") == "DUPLICATE"]
     errors = [r[1] for r in results if r[0] != 200]
 
-    logger.info(f"HTTP concurrency test: {len(ingested)} INGESTED, {len(duplicates)} DUPLICATE, {len(errors)} errors")
+    logger.info(f"HTTP concurrency test completed in {elapsed:.2f}s: {len(ingested)} INGESTED, {len(duplicates)} DUPLICATE, {len(errors)} errors")
     if len(ingested) == 1 and len(duplicates) == 49 and len(errors) == 0:
         logger.info("✅ HTTP concurrency test PASSED – idempotency holds under load.")
     else:
