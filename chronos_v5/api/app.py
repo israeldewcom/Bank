@@ -426,9 +426,14 @@ async def run_http_concurrency_test():
             return 0, {"error": str(e)}
 
     idempotency_key = f"concurrent_{uuid.uuid4().hex}"
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        tasks = [send_trade(client, idempotency_key) for _ in range(50)]
-        results = await asyncio.gather(*tasks)
+    # Use a timeout on the gather to prevent hanging indefinitely
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            tasks = [send_trade(client, idempotency_key) for _ in range(50)]
+            results = await asyncio.wait_for(asyncio.gather(*tasks), timeout=60.0)
+    except asyncio.TimeoutError:
+        logger.error("⚠️ HTTP concurrency test timed out after 60 seconds.")
+        return
 
     successes = [r[1] for r in results if r[0] == 200]
     ingested = [r[1] for r in successes if r[1].get("status") == "INGESTED"]
