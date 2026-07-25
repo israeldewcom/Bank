@@ -4,9 +4,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.middleware.httpsredirect import HTTPSRedirectMiddleware
 from fastapi_limiter import FastAPILimiter
-import redis.asyncio as aioredis  # <--- async Redis for limiter
-import redis  # <--- sync Redis for other parts (market data, etc.)
-import asyncio, os
+import redis.asyncio as aioredis
+import redis
+import asyncio
+import os
 from datetime import datetime, timezone
 from chronos_v5.config import Config
 from chronos_v5.api.middleware import CorrelationIdMiddleware
@@ -93,18 +94,8 @@ if Config.ENV != "production" or os.getenv("ADVANCED_FEATURES_ENABLED", "false")
 async def startup():
     # --- FastAPILimiter with async Redis ---
     if Config.ENV == "test":
-        try:
-            # Use fakeredis async if available, else skip
-            from fakeredis import FakeRedis
-            # fakeredis doesn't have async support by default; use sync wrapper or skip
-            # Instead, we'll use a simple in-memory store for tests via a different approach.
-            # For now, we'll just use sync client in test mode (works with FastAPILimiter if we patch)
-            # But easiest: skip limiter in test mode by not initializing.
-            logger.info("Rate limiter disabled in test mode")
-        except ImportError:
-            logger.warning("fakeredis not installed; rate limiter disabled in test mode")
+        logger.info("Rate limiter disabled in test mode")
     else:
-        # Use async Redis client
         redis_conn = await aioredis.from_url(Config.REDIS_URL, decode_responses=True)
         await FastAPILimiter.init(redis_conn)
         logger.info("FastAPI-Limiter initialized with async Redis")
@@ -114,6 +105,19 @@ async def startup():
         if async_database:
             await async_database.connect()
             logger.info("Async DB connected")
+
+    # --- SELF‑TEST (idempotency) ---
+    if os.getenv("RUN_SELFTEST", "false").lower() == "true":
+        try:
+            from chronos_v5.tests.idempotency_self_test import run_idempotency_self_test
+            passed = await run_idempotency_self_test()
+            if not passed:
+                logger.error("⚠️ Self‑test FAILED – idempotency broken!")
+            else:
+                logger.info("✅ Self‑test PASSED – idempotency works.")
+        except Exception as e:
+            logger.error(f"Self‑test error: {e}")
+
     asyncio.create_task(nigeria.connect_ngx_websocket())
 
 @app.on_event("shutdown")
