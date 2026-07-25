@@ -1,4 +1,4 @@
-# services package
+# chronos_v5/services/predictor.py
 import joblib, numpy as np, pandas as pd, redis, asyncio
 from river import linear_model, preprocessing, compose
 from chronos_v5.config import Config
@@ -7,7 +7,7 @@ from chronos_v5.logger_setup import logger
 from chronos_v5.drift_detector import DriftDetector
 from chronos_v5.models import Trade, FailHistory, PnLAttribution, Counterparty
 from chronos_v5.hsm_abstraction import hsm
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 class SettlementPredictor:
     def __init__(self, db_session=None, retrain_on_init=True):
@@ -50,10 +50,14 @@ class SettlementPredictor:
     def _generate_features(self, trade_dict_or_df):
         if isinstance(trade_dict_or_df, dict):
             d = trade_dict_or_df
+            # Parse settle_date as timezone-aware UTC
+            settle_dt = datetime.fromisoformat(d['settle_date']).replace(tzinfo=timezone.utc)
+            now_utc = datetime.now(timezone.utc)
+            days_to_settle = (settle_dt - now_utc).days
             features = {
                 'notional': d.get('notional', 0),
                 'counterparty_risk': self._get_counterparty_risk(d.get('counterparty_id')),
-                'days_to_settle': (datetime.fromisoformat(d['settle_date']) - datetime.now()).days,
+                'days_to_settle': days_to_settle,
                 'instrument_volatility': 0.05,
                 'market_volatility': 0.1,
                 'haircut': 0.02,
@@ -64,7 +68,13 @@ class SettlementPredictor:
             return pd.DataFrame([features])
         else:
             df = trade_dict_or_df.copy()
-            df['days_to_settle'] = (pd.to_datetime(df['settle_date']) - pd.Timestamp.now()).dt.days
+            # Convert settle_date to datetime, make timezone-aware
+            df['settle_date'] = pd.to_datetime(df['settle_date'])
+            # If naive, make it UTC-aware
+            if df['settle_date'].dt.tz is None:
+                df['settle_date'] = df['settle_date'].dt.tz_localize('utc')
+            now_utc = datetime.now(timezone.utc)
+            df['days_to_settle'] = (df['settle_date'] - now_utc).dt.days
             df['counterparty_risk'] = df['counterparty_id'].apply(self._get_counterparty_risk)
             df['desk_exposure'] = df['desk'].apply(self._get_desk_exposure)
             return df[['notional','counterparty_risk','days_to_settle','instrument_volatility','market_volatility','haircut','rehypo_yield','emergency_rate','desk_exposure']]
