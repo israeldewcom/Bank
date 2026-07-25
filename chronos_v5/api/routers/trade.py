@@ -4,14 +4,14 @@ from fastapi_limiter.depends import RateLimiter
 from pydantic import BaseModel, Field, validator
 from typing import Optional
 from datetime import datetime, timezone
-from sqlalchemy.ext.asyncio import AsyncSession
 from chronos_v5.database import AsyncSessionLocal, async_database
 from chronos_v5.repositories.trade_repository import TradeRepositoryAsync
 from chronos_v5.services.predictor import SettlementPredictor
 from chronos_v5.pricing_engine import PricingEngine
-from chronos_v5.api.dependencies import get_api_key, get_tenant_from_request
+from chronos_v5.api.auth_deps import get_current_user, get_tenant_from_request
 from chronos_v5.tasks import attribute_pnl, generate_alpha_signals
 from chronos_v5.config import Config
+from chronos_v5.models import User
 import asyncio
 
 router = APIRouter()
@@ -43,11 +43,16 @@ class TradeResponse(BaseModel):
     recommended_action: str
     price: Optional[dict] = None
 
-@router.post("/ingest", dependencies=[Depends(get_api_key), Depends(RateLimiter(times=500, seconds=60))])
-async def ingest_trade_async(trade: TradeIngest,
-                             background_tasks: BackgroundTasks,
-                             request: Request):
-    # Capture tenant from header (defaults to "default")
+@router.post(
+    "/ingest",
+    dependencies=[Depends(RateLimiter(times=500, seconds=60))]
+)
+async def ingest_trade_async(
+    trade: TradeIngest,
+    background_tasks: BackgroundTasks,
+    request: Request,
+    current_user: User = Depends(get_current_user)  # <-- replaced get_api_key
+):
     tenant = get_tenant_from_request(request)
     if not Config.ASYNC_DB or async_database is None:
         raise HTTPException(status_code=501, detail="Async DB not enabled")
@@ -55,7 +60,6 @@ async def ingest_trade_async(trade: TradeIngest,
     existing = await repo.get_by_idempotency(trade.idempotency_key)
     if existing:
         return {"status": "DUPLICATE", "trade": existing}
-    # Pass tenant to repository (we'll add tenant to the model)
     trade_dict = trade.dict()
     trade_dict['tenant'] = tenant
     trade_id = await repo.insert(trade_dict, trade.idempotency_key)
@@ -67,7 +71,6 @@ async def ingest_trade_async(trade: TradeIngest,
     background_tasks.add_task(generate_alpha_signals.delay)
     if prob > 0.15:
         avoided_cost = trade.notional * Config.EMERGENCY_BORROW_RATE
-        # Pass tenant to the PnL task
         background_tasks.add_task(attribute_pnl.delay, trade_id, "AVOIDED_FAIL", avoided_cost * 0.5, tenant)
     return TradeResponse(
         status="INGESTED",
@@ -77,8 +80,16 @@ async def ingest_trade_async(trade: TradeIngest,
         price=price
     )
 
-@router.post("/ingest_sync", dependencies=[Depends(get_api_key), Depends(RateLimiter(times=500, seconds=60))])
-def ingest_trade_sync(trade: TradeIngest, background_tasks: BackgroundTasks, request: Request):
+@router.post(
+    "/ingest_sync",
+    dependencies=[Depends(RateLimiter(times=500, seconds=60))]
+)
+def ingest_trade_sync(
+    trade: TradeIngest,
+    background_tasks: BackgroundTasks,
+    request: Request,
+    current_user: User = Depends(get_current_user)  # <-- replaced get_api_key
+):
     from chronos_v5.repositories.trade_repository import TradeRepository
     tenant = get_tenant_from_request(request)
     repo = TradeRepository()
@@ -105,7 +116,7 @@ def ingest_trade_sync(trade: TradeIngest, background_tasks: BackgroundTasks, req
     )
 
 @router.get("/{trade_id}")
-async def get_trade(trade_id: str):
+async def get_trade(trade_id: str, current_user: User = Depends(get_current_user)):
     repo = TradeRepositoryAsync()
     trade = await repo.get(trade_id)
     if not trade:
@@ -113,7 +124,7 @@ async def get_trade(trade_id: str):
     return trade
 
 @router.get("/")
-async def list_trades(limit: int = 50, offset: int = 0):
+async def list_trades(limit: int = 50, offset: int = 0, current_user: User = Depends(get_current_user)):
     repo = TradeRepositoryAsync()
     trades = await repo.get_all(limit=limit, offset=offset)
     return trades
