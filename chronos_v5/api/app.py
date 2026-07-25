@@ -319,10 +319,15 @@ async def run_http_concurrency_test():
         now = datetime.now(timezone.utc)
         hashed = bcrypt.hashpw(b"temp_pass", bcrypt.gensalt()).decode()
 
+        # Build columns dynamically – include is_active, status, role only if they exist
         columns = [col for col in USER_COLUMNS if col in [
-            "id", "email", password_col, "full_name", "status", "role", "tenant",
+            "id", "email", password_col, "full_name", "tenant",
             "created_at", "is_active", "trial_expiry", "last_login"
         ]]
+        # Add status and role if present
+        for col in ["status", "role"]:
+            if col in USER_COLUMNS:
+                columns.append(col)
         placeholders = ", ".join([f":{col}" for col in columns])
         sql = f"INSERT INTO users ({', '.join(columns)}) VALUES ({placeholders})"
 
@@ -331,15 +336,18 @@ async def run_http_concurrency_test():
             "email": test_email,
             password_col: hashed,
             "full_name": "HTTP Self Test",
-            "status": "approved",
-            "role": "user",
             "tenant": "default",
             "created_at": now,
             "is_active": True,
             "trial_expiry": None,
             "last_login": None
         }
+        if "status" in columns:
+            params["status"] = "approved"
+        if "role" in columns:
+            params["role"] = "user"
         params = {k: v for k, v in params.items() if k in columns}
+
         db.execute(text(sql), params)
 
         raw_key = secrets.token_urlsafe(32)
