@@ -93,7 +93,7 @@ if Config.ENV != "production" or os.getenv("ADVANCED_FEATURES_ENABLED", "false")
         logger.warning(f"Advanced API not available: {e}")
 
 # ============================================================
-# DYNAMIC COLUMN DETECTION
+# DYNAMIC COLUMN DETECTION & TABLE CREATION
 # ============================================================
 USER_COLUMNS = []
 PASSWORD_COLUMN = None
@@ -108,14 +108,12 @@ def detect_user_columns():
         """))
         USER_COLUMNS = [row[0] for row in result.fetchall()]
         logger.info(f"Detected columns in users table: {USER_COLUMNS}")
-        # Find password column
         for col in ["password_hash", "hashed_password", "password", "pw_hash"]:
             if col in USER_COLUMNS:
                 PASSWORD_COLUMN = col
                 logger.info(f"Using password column: {PASSWORD_COLUMN}")
                 break
         if PASSWORD_COLUMN is None:
-            # Fallback: first column containing 'password'
             for col in USER_COLUMNS:
                 if "password" in col.lower():
                     PASSWORD_COLUMN = col
@@ -126,8 +124,31 @@ def detect_user_columns():
     finally:
         db.close()
 
+def ensure_api_keys_table():
+    """Create api_keys table if it doesn't exist."""
+    db = SyncSessionLocal()
+    try:
+        db.execute(text("""
+            CREATE TABLE IF NOT EXISTS api_keys (
+                id UUID PRIMARY KEY,
+                user_id UUID NOT NULL,
+                key_prefix VARCHAR(20) NOT NULL,
+                key_hash VARCHAR(255) NOT NULL,
+                tenant VARCHAR(50) NOT NULL DEFAULT 'default',
+                created_at TIMESTAMP NOT NULL,
+                revoked_at TIMESTAMP,
+                last_used_at TIMESTAMP
+            )
+        """))
+        db.commit()
+        logger.info("✅ api_keys table ready")
+    except Exception as e:
+        logger.error(f"Failed to create api_keys table: {e}")
+    finally:
+        db.close()
+
 # ============================================================
-# ADMIN CREATION (matches actual schema)
+# ADMIN CREATION
 # ============================================================
 def ensure_admin_exists():
     if not USER_COLUMNS or PASSWORD_COLUMN is None:
@@ -168,7 +189,6 @@ def ensure_admin_exists():
             "trial_expiry": None,
             "last_login": None
         }
-        # Remove params for columns that don't exist (just in case)
         params = {k: v for k, v in params.items() if k in columns}
 
         db.execute(text(sql), params)
@@ -195,6 +215,7 @@ def ensure_admin_exists():
         )
         db.commit()
         logger.info(f"🔑 Admin API key: {raw_key}")
+        logger.info("📋 Copy this key now – it will not be shown again.")
     except Exception as e:
         logger.error(f"Failed to create admin: {e}")
     finally:
@@ -205,6 +226,9 @@ def ensure_admin_exists():
 # ============================================================
 @app.on_event("startup")
 async def startup():
+    # --- Ensure api_keys table exists ---
+    ensure_api_keys_table()
+
     # --- Detect actual schema ---
     detect_user_columns()
 
@@ -224,11 +248,6 @@ async def startup():
         if async_database:
             await async_database.connect()
             logger.info("Async DB connected")
-
-    # Self-test disabled – we know idempotency works via DB constraint
-    if os.getenv("RUN_SELFTEST", "false").lower() == "true":
-        logger.info("Self-test is disabled in this version; skipping.")
-        # We can optionally re-enable later with proper dynamic column handling
 
     asyncio.create_task(nigeria.connect_ngx_websocket())
 
