@@ -11,6 +11,7 @@ import os
 import uuid
 import bcrypt
 import secrets
+import httpx
 from datetime import datetime, timezone
 from chronos_v5.config import Config
 from chronos_v5.api.middleware import CorrelationIdMiddleware
@@ -23,8 +24,8 @@ from prometheus_client import generate_latest, REGISTRY
 from fastapi.responses import Response
 from chronos_v5.database import SyncSessionLocal
 from chronos_v5.nigeria_adapter import nigeria
-from chronos_v5.models import User, APIKey, Base
-from sqlalchemy import text, inspect
+from chronos_v5.models import User, APIKey
+from sqlalchemy import text
 
 app = FastAPI(
     title="Chronos v5.2 - Full Production Bank Edition",
@@ -93,7 +94,7 @@ if Config.ENV != "production" or os.getenv("ADVANCED_FEATURES_ENABLED", "false")
         logger.warning(f"Advanced API not available: {e}")
 
 # ============================================================
-# DYNAMIC COLUMN DETECTION & TABLE CREATION
+# SCHEMA DETECTION & TABLE CREATION
 # ============================================================
 USER_COLUMNS = []
 PASSWORD_COLUMN = None
@@ -125,7 +126,6 @@ def detect_user_columns():
         db.close()
 
 def ensure_api_keys_table():
-    """Create api_keys table if it doesn't exist."""
     db = SyncSessionLocal()
     try:
         db.execute(text("""
@@ -157,7 +157,6 @@ def ensure_admin_exists():
 
     db = SyncSessionLocal()
     try:
-        # Check if admin exists
         result = db.execute(text("SELECT id FROM users WHERE role = 'admin' LIMIT 1"))
         if result.fetchone():
             logger.info("Admin already exists.")
@@ -169,7 +168,6 @@ def ensure_admin_exists():
         admin_id = uuid.uuid4()
         now = datetime.now(timezone.utc)
 
-        # Build INSERT using only existing columns
         columns = [col for col in USER_COLUMNS if col in [
             "id", "email", PASSWORD_COLUMN, "full_name", "role", "tenant",
             "created_at", "is_active", "trial_expiry", "last_login"
@@ -195,7 +193,6 @@ def ensure_admin_exists():
         db.commit()
         logger.info(f"✅ Admin user created with email: {admin_email}")
 
-        # Generate API key
         raw_key = secrets.token_urlsafe(32)
         api_key_id = uuid.uuid4()
         key_hash = bcrypt.hashpw(raw_key.encode(), bcrypt.gensalt()).decode()
@@ -220,6 +217,100 @@ def ensure_admin_exists():
         logger.error(f"Failed to create admin: {e}")
     finally:
         db.close()
+
+# ============================================================
+# SELF‑TEST (idempotency) – uses detected schema
+# ============================================================
+async def run_self_test():
+    if not USER_COLUMNS or PASSWORD_COLUMN is None:
+        logger.warning("Self‑test skipped – no column info")
+        return False
+
+    base_url = f"http://localhost:{os.getenv('PORT', '10000')}"
+    db = SyncSessionLocal()
+    try:
+        test_email = f"self_test_{uuid.uuid4().hex[:8]}@chronos.local"
+        test_user_id = uuid.uuid4()
+        now = datetime.now(timezone.utc)
+        hashed = bcrypt.hashpw(b"temp_pass", bcrypt.gensalt()).decode()
+
+        columns = [col for col in USER_COLUMNS if col in [
+            "id", "email", PASSWORD_COLUMN, "full_name", "role", "tenant",
+            "created_at", "is_active", "trial_expiry", "last_login"
+        ]]
+        placeholders = ", ".join([f":{col}" for col in columns])
+        sql = f"INSERT INTO users ({', '.join(columns)}) VALUES ({placeholders})"
+
+        params = {
+            "id": str(test_user_id),
+            "email": test_email,
+            PASSWORD_COLUMN: hashed,
+            "full_name": "Self Test",
+            "role": "user",
+            "tenant": "default",
+            "created_at": now,
+            "is_active": True,
+            "trial_expiry": None,
+            "last_login": None
+        }
+        params = {k: v for k, v in params.items() if k in columns}
+        db.execute(text(sql), params)
+
+        raw_key = secrets.token_urlsafe(32)
+        api_key_id = uuid.uuid4()
+        key_hash = bcrypt.hashpw(raw_key.encode(), bcrypt.gensalt()).decode()
+        db.execute(
+            text("""
+                INSERT INTO api_keys (id, user_id, key_prefix, key_hash, tenant, created_at)
+                VALUES (:id, :user_id, :key_prefix, :key_hash, :tenant, :created_at)
+            """),
+            {
+                "id": str(api_key_id),
+                "user_id": str(test_user_id),
+                "key_prefix": raw_key[:12],
+                "key_hash": key_hash,
+                "tenant": "default",
+                "created_at": now
+            }
+        )
+        db.commit()
+        db.close()
+    except Exception as e:
+        db.close()
+        logger.error(f"Self‑test DB setup failed: {e}")
+        return False
+
+    logger.info(f"Self‑test: created temporary user {test_email}")
+
+    async def send_trade(client, idempotency_key):
+        payload = {
+            "id": str(uuid.uuid4()),
+            "desk": "SELF_TEST",
+            "counterparty_id": "SELF",
+            "currency": "NGN",
+            "notional": 1000,
+            "settle_date": "2026-12-31T00:00:00",
+            "idempotency_key": idempotency_key
+        }
+        resp = await client.post(
+            f"{base_url}/trade/ingest_sync",
+            json=payload,
+            headers={"X-API-Key": raw_key, "X-Tenant": "default"}
+        )
+        return resp.status_code, resp.json()
+
+    idempotency_key = f"self_test_{uuid.uuid4().hex}"
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        tasks = [send_trade(client, idempotency_key) for _ in range(50)]
+        results = await asyncio.gather(*tasks)
+
+    successes = [r[1] for r in results if r[0] == 200]
+    ingested = [r[1] for r in successes if r[1].get("status") == "INGESTED"]
+    duplicates = [r[1] for r in successes if r[1].get("status") == "DUPLICATE"]
+
+    passed = len(ingested) == 1 and len(duplicates) == 49
+    logger.info(f"Self‑test: {len(ingested)} INGESTED, {len(duplicates)} DUPLICATE → {'PASS' if passed else 'FAIL'}")
+    return passed
 
 # ============================================================
 # LIFECYCLE EVENTS
@@ -248,6 +339,17 @@ async def startup():
         if async_database:
             await async_database.connect()
             logger.info("Async DB connected")
+
+    # --- Self‑test (only if explicitly enabled) ---
+    if os.getenv("RUN_SELFTEST", "false").lower() == "true":
+        try:
+            passed = await run_self_test()
+            if not passed:
+                logger.error("⚠️ Self‑test FAILED – idempotency broken!")
+            else:
+                logger.info("✅ Self‑test PASSED – idempotency works.")
+        except Exception as e:
+            logger.error(f"Self‑test error: {e}")
 
     asyncio.create_task(nigeria.connect_ngx_websocket())
 
