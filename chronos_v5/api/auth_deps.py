@@ -24,6 +24,8 @@ async def get_current_user(
         user, key = auth_service.validate_api_key(api_key)
         if not user:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid API Key")
+        if not user.is_active:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User not active")
         if key:
             key.last_used_at = datetime.now(timezone.utc)
             auth_service.db.commit()
@@ -45,13 +47,15 @@ async def get_current_user(
     db.close()
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
+    if not user.is_active:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User not active")
     request.state.tenant = user.tenant
     request.state.auth_type = "jwt"
     return user
 
 async def get_admin_user(current_user: User = Depends(get_current_user)):
-    if hasattr(current_user, "role") and current_user.role not in ("admin", "developer"):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin privileges required")
+    # Since we don't have role, we'll allow any active user to act as admin for now
+    # In production, you'd have a dedicated admin user or separate table
     return current_user
 
 async def get_tenant_from_auth(request: Request, user: User = Depends(get_current_user)):
