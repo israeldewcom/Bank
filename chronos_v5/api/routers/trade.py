@@ -45,13 +45,11 @@ class TradeResponse(BaseModel):
     price: Optional[dict] = None
 
 def safe_delay(task, *args, **kwargs):
-    """Wrap Celery delay in try/except to avoid connection errors failing the response."""
+    """Wrap Celery delay in try/except to avoid connection errors."""
     try:
         return task.delay(*args, **kwargs)
     except Exception as e:
         logger.error(f"Celery task {task.name} failed to queue: {e}")
-        # Optionally, you can fallback to running synchronously here
-        # but we'll just log and continue
         return None
 
 @router.post(
@@ -79,7 +77,6 @@ async def ingest_trade_async(
     await predictor.predict_and_store_async(trade_dict)
     pricing = PricingEngine()
     price = await pricing.get_client_price_async(trade.counterparty_id, trade.instrument_type or 'UNKNOWN', trade.notional)
-    # Use safe_delay to avoid Celery connection errors
     safe_delay(generate_alpha_signals)
     if prob > 0.15:
         avoided_cost = trade.notional * Config.EMERGENCY_BORROW_RATE
