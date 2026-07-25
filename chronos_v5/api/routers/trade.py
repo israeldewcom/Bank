@@ -12,6 +12,7 @@ from chronos_v5.api.auth_deps import get_current_user, get_tenant_from_request
 from chronos_v5.tasks import attribute_pnl, generate_alpha_signals
 from chronos_v5.config import Config
 from chronos_v5.models import User
+from chronos_v5.logger_setup import logger
 import asyncio
 
 router = APIRouter()
@@ -43,6 +44,16 @@ class TradeResponse(BaseModel):
     recommended_action: str
     price: Optional[dict] = None
 
+def safe_delay(task, *args, **kwargs):
+    """Wrap Celery delay in try/except to avoid connection errors failing the response."""
+    try:
+        return task.delay(*args, **kwargs)
+    except Exception as e:
+        logger.error(f"Celery task {task.name} failed to queue: {e}")
+        # Optionally, you can fallback to running synchronously here
+        # but we'll just log and continue
+        return None
+
 @router.post(
     "/ingest",
     dependencies=[Depends(RateLimiter(times=500, seconds=60))]
@@ -68,10 +79,11 @@ async def ingest_trade_async(
     await predictor.predict_and_store_async(trade_dict)
     pricing = PricingEngine()
     price = await pricing.get_client_price_async(trade.counterparty_id, trade.instrument_type or 'UNKNOWN', trade.notional)
-    background_tasks.add_task(generate_alpha_signals.delay)
+    # Use safe_delay to avoid Celery connection errors
+    safe_delay(generate_alpha_signals)
     if prob > 0.15:
         avoided_cost = trade.notional * Config.EMERGENCY_BORROW_RATE
-        background_tasks.add_task(attribute_pnl.delay, trade_id, "AVOIDED_FAIL", avoided_cost * 0.5, tenant)
+        safe_delay(attribute_pnl, trade_id, "AVOIDED_FAIL", avoided_cost * 0.5, tenant)
     return TradeResponse(
         status="INGESTED",
         trade_id=trade_id,
@@ -103,10 +115,10 @@ def ingest_trade_sync(
     prob = predictor.predict(trade_dict)
     pricing = PricingEngine()
     price = pricing.get_client_price(trade.counterparty_id, trade.instrument_type or 'UNKNOWN', trade.notional)
-    background_tasks.add_task(generate_alpha_signals.delay)
+    safe_delay(generate_alpha_signals)
     if prob > 0.15:
         avoided_cost = trade.notional * Config.EMERGENCY_BORROW_RATE
-        background_tasks.add_task(attribute_pnl.delay, trade_id, "AVOIDED_FAIL", avoided_cost * 0.5, tenant)
+        safe_delay(attribute_pnl, trade_id, "AVOIDED_FAIL", avoided_cost * 0.5, tenant)
     return TradeResponse(
         status="INGESTED",
         trade_id=trade_id,
