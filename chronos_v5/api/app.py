@@ -94,76 +94,127 @@ if Config.ENV != "production" or os.getenv("ADVANCED_FEATURES_ENABLED", "false")
         logger.warning(f"Advanced API not available: {e}")
 
 # ============================================================
-# DYNAMIC COLUMN DETECTION
+# ACTUAL DATABASE COLUMN DETECTION (via information schema)
 # ============================================================
+PASSWORD_COLUMN = None
+USER_TABLE_EXISTS = False
+
+def detect_user_columns():
+    """Return a list of actual column names from the users table."""
+    global USER_TABLE_EXISTS
+    db = SyncSessionLocal()
+    try:
+        # Check if users table exists
+        result = db.execute(text(
+            "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name='users')"
+        ))
+        USER_TABLE_EXISTS = result.scalar()
+        if not USER_TABLE_EXISTS:
+            logger.warning("users table does not exist yet – skipping column detection")
+            return []
+
+        # Get column names
+        result = db.execute(text(
+            "SELECT column_name FROM information_schema.columns WHERE table_name='users'"
+        ))
+        columns = [row[0] for row in result.fetchall()]
+        logger.info(f"Detected columns in users table: {columns}")
+        return columns
+    except Exception as e:
+        logger.error(f"Failed to detect columns: {e}")
+        return []
+    finally:
+        db.close()
+
 def get_password_column():
-    """Detect the actual column name for the password field in the User model."""
-    inspector = inspect(User)
-    columns = [c.name for c in inspector.columns]
+    """Return the actual password column name from the database."""
+    global PASSWORD_COLUMN
+    if PASSWORD_COLUMN is not None:
+        return PASSWORD_COLUMN
+    columns = detect_user_columns()
+    if not columns:
+        return None
+    # Try common names
     for col in ["password_hash", "hashed_password", "password", "pw_hash"]:
         if col in columns:
+            PASSWORD_COLUMN = col
             return col
-    # Fallback: return the first column that contains 'password'
+    # Fallback: first column containing 'password'
     for col in columns:
         if "password" in col.lower():
+            PASSWORD_COLUMN = col
             return col
-    raise RuntimeError("Could not find a password column in the User model")
-
-PASSWORD_COLUMN = None
+    return None
 
 # ============================================================
-# ADMIN CREATION ON STARTUP (with dynamic column)
+# ADMIN CREATION (using raw SQL)
 # ============================================================
 def ensure_admin_exists():
-    global PASSWORD_COLUMN
-    if PASSWORD_COLUMN is None:
-        try:
-            PASSWORD_COLUMN = get_password_column()
-            logger.info(f"Detected password column: {PASSWORD_COLUMN}")
-        except Exception as e:
-            logger.error(f"Failed to detect password column: {e}")
-            return
+    if not USER_TABLE_EXISTS:
+        logger.info("users table not yet available – skipping admin creation")
+        return
+
+    password_col = get_password_column()
+    if not password_col:
+        logger.error("Cannot find password column – skipping admin creation")
+        return
 
     db = SyncSessionLocal()
     try:
-        # Check for existing admin using the detected column
-        admin_exists = db.query(User).filter(User.role == "admin").first()
+        # Check if any admin exists
+        result = db.execute(text("SELECT id FROM users WHERE role = 'admin' LIMIT 1"))
+        admin_exists = result.fetchone()
         if admin_exists:
             logger.info("Admin user already exists – skipping creation.")
             return
 
         admin_email = os.getenv("ADMIN_EMAIL", "admin@chronos.local")
         admin_password = os.getenv("ADMIN_PASSWORD", "Admin123!")
-
-        # Hash password
         hashed = bcrypt.hashpw(admin_password.encode(), bcrypt.gensalt()).decode()
+        admin_id = uuid.uuid4()
+        now = datetime.now(timezone.utc)
 
-        # Create admin user with dynamic column
-        admin_kwargs = {
-            "id": uuid.uuid4(),
+        # Build INSERT dynamically
+        columns = [
+            "id", "email", password_col, "full_name", "status",
+            "role", "tenant", "created_at", "approved_by", "approved_at"
+        ]
+        placeholders = ", ".join([f":{col}" for col in columns])
+        sql = f"INSERT INTO users ({', '.join(columns)}) VALUES ({placeholders})"
+        params = {
+            "id": str(admin_id),
             "email": admin_email,
+            password_col: hashed,
             "full_name": "System Admin",
             "status": "approved",
             "role": "admin",
             "tenant": "default",
-            "created_at": datetime.now(timezone.utc)
+            "created_at": now,
+            "approved_by": None,
+            "approved_at": None
         }
-        admin_kwargs[PASSWORD_COLUMN] = hashed
-
-        admin = User(**admin_kwargs)
-        db.add(admin)
+        db.execute(text(sql), params)
         db.commit()
         logger.info(f"✅ Admin user created with email: {admin_email}")
 
         # Generate API key
         raw_key = secrets.token_urlsafe(32)
-        api_key = APIKey(
-            user_id=admin.id,
-            key_prefix=raw_key[:12],
-            key_hash=bcrypt.hashpw(raw_key.encode(), bcrypt.gensalt()).decode(),
-            tenant="default"
+        api_key_id = uuid.uuid4()
+        key_hash = bcrypt.hashpw(raw_key.encode(), bcrypt.gensalt()).decode()
+        db.execute(
+            text("""
+                INSERT INTO api_keys (id, user_id, key_prefix, key_hash, tenant, created_at)
+                VALUES (:id, :user_id, :key_prefix, :key_hash, :tenant, :created_at)
+            """),
+            {
+                "id": str(api_key_id),
+                "user_id": str(admin_id),
+                "key_prefix": raw_key[:12],
+                "key_hash": key_hash,
+                "tenant": "default",
+                "created_at": now
+            }
         )
-        db.add(api_key)
         db.commit()
         logger.info(f"🔑 Admin API key (copy this): {raw_key}")
     except Exception as e:
@@ -172,45 +223,65 @@ def ensure_admin_exists():
         db.close()
 
 # ============================================================
-# SELF‑TEST FUNCTION (with dynamic column)
+# SELF‑TEST (using raw SQL)
 # ============================================================
 async def run_self_test():
-    global PASSWORD_COLUMN
-    if PASSWORD_COLUMN is None:
-        try:
-            PASSWORD_COLUMN = get_password_column()
-        except Exception as e:
-            logger.error(f"Cannot run self‑test: {e}")
-            return False
+    if not USER_TABLE_EXISTS:
+        logger.info("users table not available – skipping self‑test")
+        return False
+
+    password_col = get_password_column()
+    if not password_col:
+        logger.error("Cannot find password column – skipping self‑test")
+        return False
 
     base_url = f"http://localhost:{os.getenv('PORT', '10000')}"
     db = SyncSessionLocal()
-
     try:
         test_email = f"self_test_{uuid.uuid4().hex[:8]}@chronos.local"
-        test_user_kwargs = {
-            "id": uuid.uuid4(),
+        test_user_id = uuid.uuid4()
+        now = datetime.now(timezone.utc)
+        hashed = bcrypt.hashpw(b"temp_pass", bcrypt.gensalt()).decode()
+
+        # Insert test user
+        columns = [
+            "id", "email", password_col, "full_name", "status",
+            "role", "tenant", "created_at", "approved_by", "approved_at"
+        ]
+        placeholders = ", ".join([f":{col}" for col in columns])
+        sql = f"INSERT INTO users ({', '.join(columns)}) VALUES ({placeholders})"
+        params = {
+            "id": str(test_user_id),
             "email": test_email,
+            password_col: hashed,
             "full_name": "Self Test",
             "status": "approved",
             "role": "user",
             "tenant": "default",
-            "created_at": datetime.now(timezone.utc)
+            "created_at": now,
+            "approved_by": None,
+            "approved_at": None
         }
-        test_user_kwargs[PASSWORD_COLUMN] = bcrypt.hashpw(b"temp_pass", bcrypt.gensalt()).decode()
+        db.execute(text(sql), params)
 
-        test_user = User(**test_user_kwargs)
-        db.add(test_user)
-        db.commit()
-
+        # Generate API key
         raw_key = secrets.token_urlsafe(32)
-        api_key = APIKey(
-            user_id=test_user.id,
-            key_prefix=raw_key[:12],
-            key_hash=bcrypt.hashpw(raw_key.encode(), bcrypt.gensalt()).decode(),
-            tenant="default"
+        api_key_id = uuid.uuid4()
+        key_hash = bcrypt.hashpw(raw_key.encode(), bcrypt.gensalt()).decode()
+        db.execute(
+            text("""
+                INSERT INTO api_keys (id, user_id, key_prefix, key_hash, tenant, created_at)
+                VALUES (:id, :user_id, :key_prefix, :key_hash, :tenant, :created_at)
+            """),
+            {
+                "id": str(api_key_id),
+                "user_id": str(test_user_id),
+                "key_prefix": raw_key[:12],
+                "key_hash": key_hash,
+                "tenant": "default",
+                "created_at": now
+            }
         )
-        db.add(api_key)
         db.commit()
         db.close()
     except Exception as e:
@@ -255,6 +326,9 @@ async def run_self_test():
 # ============================================================
 @app.on_event("startup")
 async def startup():
+    # --- Detect actual schema ---
+    detect_user_columns()
+
     # --- Admin creation (synchronous) ---
     ensure_admin_exists()
 
