@@ -41,8 +41,9 @@ async def get_current_user(
     user_id = payload.get("sub")
     if not user_id:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token payload")
+    # user_id should be a string from JWT
     db = SyncSessionLocal()
-    user = db.query(User).filter(User.id == user_id).first()
+    user = db.query(User).filter(User.id == str(user_id)).first()
     db.close()
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
@@ -53,8 +54,7 @@ async def get_current_user(
     return user
 
 async def get_admin_user(current_user: User = Depends(get_current_user)):
-    # Since no role column, we treat any active user as admin for now.
-    # In production, you'd have a dedicated admin table or role column.
+    # No role column – treat any active user as admin for now
     return current_user
 
 async def get_tenant_from_auth(request: Request, user: User = Depends(get_current_user)):
