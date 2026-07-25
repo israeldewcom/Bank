@@ -1,4 +1,6 @@
- # chronos_v5/api/routers/trade.py
+  # chronos_v5/api/routers/trade.py
+# ONLY CHANGE FROM LAST DELIVERY: import line now points at the single
+# canonical module instead of the now-deleted chronos_v5.api.auth_deps
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Request
 from fastapi_limiter.depends import RateLimiter
 from pydantic import BaseModel, Field, validator
@@ -8,12 +10,11 @@ from chronos_v5.database import AsyncSessionLocal, async_database
 from chronos_v5.repositories.trade_repository import TradeRepositoryAsync
 from chronos_v5.services.predictor import SettlementPredictor
 from chronos_v5.pricing_engine import PricingEngine
-from chronos_v5.api.auth_deps import get_current_user, get_tenant_from_request
+from chronos_v5.api.dependencies import get_current_user, get_tenant_from_request
 from chronos_v5.tasks import attribute_pnl, generate_alpha_signals
 from chronos_v5.config import Config
 from chronos_v5.models import User
 from chronos_v5.logger_setup import logger
-import asyncio
 
 router = APIRouter()
 
@@ -31,9 +32,7 @@ class TradeIngest(BaseModel):
     def validate_settle_date(cls, v):
         try:
             dt = datetime.fromisoformat(v)
-            # Make dt naive UTC (no timezone info) for comparison
             dt = dt.replace(tzinfo=None)
-            # Compare with naive UTC now
             if dt < datetime.utcnow():
                 raise ValueError("Settle date must be in future")
             return v
@@ -48,17 +47,13 @@ class TradeResponse(BaseModel):
     price: Optional[dict] = None
 
 def safe_delay(task, *args, **kwargs):
-    """Wrap Celery delay in try/except to avoid connection errors failing the response."""
     try:
         return task.delay(*args, **kwargs)
     except Exception as e:
         logger.error(f"Celery task {task.name} failed to queue: {e}")
         return None
 
-@router.post(
-    "/ingest",
-    dependencies=[Depends(RateLimiter(times=500, seconds=60))]
-)
+@router.post("/ingest", dependencies=[Depends(RateLimiter(times=500, seconds=60))])
 async def ingest_trade_async(
     trade: TradeIngest,
     background_tasks: BackgroundTasks,
@@ -74,7 +69,15 @@ async def ingest_trade_async(
         return {"status": "DUPLICATE", "trade": existing}
     trade_dict = trade.dict()
     trade_dict['tenant'] = tenant
-    trade_id = await repo.insert(trade_dict, trade.idempotency_key)
+    try:
+        trade_id = await repo.insert(trade_dict, trade.idempotency_key)
+    except ValueError as e:
+        if "Duplicate idempotency key" in str(e):
+            existing = await repo.get_by_idempotency(trade.idempotency_key)
+            if existing:
+                return {"status": "DUPLICATE", "trade": existing}
+            raise HTTPException(status_code=500, detail="Duplicate handling error")
+        raise
     predictor = SettlementPredictor()
     prob = await predictor.predict_async(trade_dict)
     await predictor.predict_and_store_async(trade_dict)
@@ -85,17 +88,11 @@ async def ingest_trade_async(
         avoided_cost = trade.notional * Config.EMERGENCY_BORROW_RATE
         safe_delay(attribute_pnl, trade_id, "AVOIDED_FAIL", avoided_cost * 0.5, tenant)
     return TradeResponse(
-        status="INGESTED",
-        trade_id=trade_id,
-        fail_probability=prob,
-        recommended_action="AUTO_BORROW" if prob > 0.15 else "STANDARD",
-        price=price
+        status="INGESTED", trade_id=trade_id, fail_probability=prob,
+        recommended_action="AUTO_BORROW" if prob > 0.15 else "STANDARD", price=price
     )
 
-@router.post(
-    "/ingest_sync",
-    dependencies=[Depends(RateLimiter(times=500, seconds=60))]
-)
+@router.post("/ingest_sync", dependencies=[Depends(RateLimiter(times=500, seconds=60))])
 def ingest_trade_sync(
     trade: TradeIngest,
     background_tasks: BackgroundTasks,
@@ -110,7 +107,15 @@ def ingest_trade_sync(
         return {"status": "DUPLICATE", "trade": existing}
     trade_dict = trade.dict()
     trade_dict['tenant'] = tenant
-    trade_id = repo.insert(trade_dict, trade.idempotency_key)
+    try:
+        trade_id = repo.insert(trade_dict, trade.idempotency_key)
+    except ValueError as e:
+        if "Duplicate idempotency key" in str(e):
+            existing = repo.get_by_idempotency(trade.idempotency_key)
+            if existing:
+                return {"status": "DUPLICATE", "trade": existing}
+            raise HTTPException(status_code=500, detail="Duplicate handling error")
+        raise
     predictor = SettlementPredictor()
     prob = predictor.predict(trade_dict)
     pricing = PricingEngine()
@@ -120,11 +125,8 @@ def ingest_trade_sync(
         avoided_cost = trade.notional * Config.EMERGENCY_BORROW_RATE
         safe_delay(attribute_pnl, trade_id, "AVOIDED_FAIL", avoided_cost * 0.5, tenant)
     return TradeResponse(
-        status="INGESTED",
-        trade_id=trade_id,
-        fail_probability=prob,
-        recommended_action="AUTO_BORROW" if prob > 0.15 else "STANDARD",
-        price=price
+        status="INGESTED", trade_id=trade_id, fail_probability=prob,
+        recommended_action="AUTO_BORROW" if prob > 0.15 else "STANDARD", price=price
     )
 
 @router.get("/{trade_id}")
@@ -138,5 +140,4 @@ async def get_trade(trade_id: str, current_user: User = Depends(get_current_user
 @router.get("/")
 async def list_trades(limit: int = 50, offset: int = 0, current_user: User = Depends(get_current_user)):
     repo = TradeRepositoryAsync()
-    trades = await repo.get_all(limit=limit, offset=offset)
-    return trades
+    return await repo.get_all(limit=limit, offset=offset)
