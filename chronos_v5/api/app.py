@@ -11,6 +11,7 @@ import os
 import uuid
 import bcrypt
 import secrets
+import httpx
 from datetime import datetime, timezone, timedelta
 from chronos_v5.config import Config
 from chronos_v5.api.middleware import CorrelationIdMiddleware
@@ -93,7 +94,7 @@ if Config.ENV != "production" or os.getenv("ADVANCED_FEATURES_ENABLED", "false")
         logger.warning(f"Advanced API not available: {e}")
 
 # ============================================================
-# SCHEMA DETECTION
+# SCHEMA DETECTION & TABLE CREATION
 # ============================================================
 USER_COLUMNS = []
 PASSWORD_COLUMN = None
@@ -234,7 +235,7 @@ def ensure_admin_exists():
         db.close()
 
 # ============================================================
-# DB‑BASED IDEMPOTENCY SELF‑TEST (dynamic columns)
+# DB‑BASED IDEMPOTENCY SELF‑TEST (no HTTP)
 # ============================================================
 def run_self_test_db():
     """
@@ -249,12 +250,8 @@ def run_self_test_db():
 
     db = SyncSessionLocal()
     try:
-        # Generate a unique idempotency key
         idempotency_key = f"self_test_{uuid.uuid4().hex}"
 
-        # Build the INSERT for trades using only existing columns
-        # Required columns: id, desk, counterparty_id, notional, settle_date, created_at, status, fail_probability, idempotency_key
-        # Optional: instrument_type, currency, tenant (if exists)
         base_cols = ["id", "desk", "counterparty_id", "notional", "settle_date", "created_at", "status", "fail_probability", "idempotency_key"]
         optional_cols = ["instrument_type", "currency", "tenant"]
         insert_cols = [c for c in base_cols + optional_cols if c in TRADES_COLUMNS]
@@ -264,7 +261,6 @@ def run_self_test_db():
         now = datetime.now(timezone.utc)
         settle_date = now + timedelta(days=1)
 
-        # First insert – should succeed
         params = {
             "id": str(uuid.uuid4()),
             "desk": "SELF_TEST",
@@ -286,7 +282,6 @@ def run_self_test_db():
         db.execute(text(sql), params)
         db.commit()
 
-        # Second insert – should fail with unique violation
         params2 = params.copy()
         params2["id"] = str(uuid.uuid4())
         try:
@@ -307,6 +302,107 @@ def run_self_test_db():
         return False
     finally:
         db.close()
+
+# ============================================================
+# HTTP CONCURRENCY SELF‑TEST (background)
+# ============================================================
+async def run_http_concurrency_test():
+    """Background concurrency test – fires 50 requests after server is live."""
+    await asyncio.sleep(5)  # give the server a moment to start
+    base_url = "http://localhost:10000"
+
+    db = SyncSessionLocal()
+    try:
+        password_col = PASSWORD_COLUMN or "password_hash"
+        test_email = f"http_test_{uuid.uuid4().hex[:8]}@chronos.local"
+        test_user_id = uuid.uuid4()
+        now = datetime.now(timezone.utc)
+        hashed = bcrypt.hashpw(b"temp_pass", bcrypt.gensalt()).decode()
+
+        columns = [col for col in USER_COLUMNS if col in [
+            "id", "email", password_col, "full_name", "status", "role", "tenant",
+            "created_at", "is_active", "trial_expiry", "last_login"
+        ]]
+        placeholders = ", ".join([f":{col}" for col in columns])
+        sql = f"INSERT INTO users ({', '.join(columns)}) VALUES ({placeholders})"
+
+        params = {
+            "id": str(test_user_id),
+            "email": test_email,
+            password_col: hashed,
+            "full_name": "HTTP Self Test",
+            "status": "approved",
+            "role": "user",
+            "tenant": "default",
+            "created_at": now,
+            "is_active": True,
+            "trial_expiry": None,
+            "last_login": None
+        }
+        params = {k: v for k, v in params.items() if k in columns}
+        db.execute(text(sql), params)
+
+        raw_key = secrets.token_urlsafe(32)
+        api_key_id = uuid.uuid4()
+        key_hash = bcrypt.hashpw(raw_key.encode(), bcrypt.gensalt()).decode()
+        db.execute(
+            text("""
+                INSERT INTO api_keys (id, user_id, key_prefix, key_hash, tenant, created_at)
+                VALUES (:id, :user_id, :key_prefix, :key_hash, :tenant, :created_at)
+            """),
+            {
+                "id": str(api_key_id),
+                "user_id": str(test_user_id),
+                "key_prefix": raw_key[:12],
+                "key_hash": key_hash,
+                "tenant": "default",
+                "created_at": now
+            }
+        )
+        db.commit()
+        db.close()
+    except Exception as e:
+        logger.error(f"HTTP concurrency test DB setup failed: {e}")
+        return
+
+    logger.info(f"HTTP concurrency test: created temporary user {test_email}")
+
+    async def send_trade(client, idempotency_key):
+        payload = {
+            "id": str(uuid.uuid4()),
+            "desk": "CONCURRENCY_TEST",
+            "counterparty_id": "SELF",
+            "currency": "NGN",
+            "notional": 1000,
+            "settle_date": (datetime.now(timezone.utc) + timedelta(days=1)).isoformat(),
+            "idempotency_key": idempotency_key
+        }
+        try:
+            resp = await client.post(
+                f"{base_url}/trade/ingest_sync",
+                json=payload,
+                headers={"X-API-Key": raw_key, "X-Tenant": "default"},
+                timeout=10.0
+            )
+            return resp.status_code, resp.json()
+        except Exception as e:
+            return 0, {"error": str(e)}
+
+    idempotency_key = f"concurrent_{uuid.uuid4().hex}"
+    async with httpx.AsyncClient() as client:
+        tasks = [send_trade(client, idempotency_key) for _ in range(50)]
+        results = await asyncio.gather(*tasks)
+
+    successes = [r[1] for r in results if r[0] == 200]
+    ingested = [r[1] for r in successes if r[1].get("status") == "INGESTED"]
+    duplicates = [r[1] for r in successes if r[1].get("status") == "DUPLICATE"]
+    errors = [r[1] for r in results if r[0] != 200]
+
+    logger.info(f"HTTP concurrency test: {len(ingested)} INGESTED, {len(duplicates)} DUPLICATE, {len(errors)} errors")
+    if len(ingested) == 1 and len(duplicates) == 49 and len(errors) == 0:
+        logger.info("✅ HTTP concurrency test PASSED – idempotency holds under load.")
+    else:
+        logger.error("⚠️ HTTP concurrency test FAILED – check duplicate handling.")
 
 # ============================================================
 # LIFECYCLE EVENTS
@@ -347,6 +443,9 @@ async def startup():
                 logger.error("⚠️ Self‑test FAILED – idempotency broken!")
         except Exception as e:
             logger.error(f"Self‑test error: {e}")
+
+        # --- Background HTTP concurrency test ---
+        asyncio.create_task(run_http_concurrency_test())
 
     asyncio.create_task(nigeria.connect_ngx_websocket())
 
