@@ -1,6 +1,6 @@
 # chronos_v5/models.py
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy import (
+from sqlchemy import (
     Column, String, Float, Integer, Boolean, DateTime,
     Text, BigInteger, ForeignKey, JSON, Enum as SQLAEnum
 )
@@ -108,7 +108,7 @@ class RiskMetrics(Base):
     capital_usage = Column(Float)
     timestamp = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
-# === AUTH TABLES – MATCH LIVE SCHEMA (VARCHAR IDs) ===
+# === AUTH TABLES – ALL IDs AS VARCHAR ===
 class User(Base):
     __tablename__ = "users"
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
@@ -120,7 +120,6 @@ class User(Base):
     last_login = Column(DateTime, nullable=True)
     tenant = Column(String(50), default="default", nullable=False, index=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
-    # No status, role, approved_by, approved_at – not in live DB
 
 class APIKey(Base):
     __tablename__ = "api_keys"
