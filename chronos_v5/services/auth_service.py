@@ -14,14 +14,6 @@ from sqlalchemy import inspect
 class AuthService:
     def __init__(self):
         self.db = SyncSessionLocal()
-        self._user_columns = self._detect_user_columns()
-
-    def _detect_user_columns(self):
-        inspector = inspect(User)
-        return [c.name for c in inspector.columns]
-
-    def _user_has_column(self, col):
-        return col in self._user_columns
 
     def hash_password(self, password: str) -> str:
         salt = bcrypt.gensalt()
@@ -47,20 +39,13 @@ class AuthService:
         if self.db.query(User).filter(User.email == email).first():
             raise ValueError("Email already registered")
         self.validate_password_policy(password)
-        user_kwargs = {
-            "email": email,
-            "password_hash": self.hash_password(password),
-            "full_name": full_name,
-            "tenant": tenant,
-            "created_at": datetime.now(timezone.utc),
-        }
-        if self._user_has_column("is_active"):
-            user_kwargs["is_active"] = True
-        if self._user_has_column("status"):
-            user_kwargs["status"] = "pending"
-        if self._user_has_column("role"):
-            user_kwargs["role"] = "user"
-        user = User(**user_kwargs)
+        user = User(
+            email=email,
+            password_hash=self.hash_password(password),
+            full_name=full_name,
+            tenant=tenant,
+            created_at=datetime.now(timezone.utc)
+        )
         self.db.add(user)
         self.db.commit()
         self.db.refresh(user)
@@ -71,17 +56,6 @@ class AuthService:
         user = self.db.query(User).filter(User.id == user_id).first()
         if not user:
             raise ValueError("User not found")
-        if self._user_has_column("status"):
-            if user.status != "pending":
-                raise ValueError("User is not pending")
-            user.status = "approved"
-        else:
-            if self._user_has_column("is_active"):
-                user.is_active = True
-        if self._user_has_column("approved_by"):
-            user.approved_by = admin_id
-        if self._user_has_column("approved_at"):
-            user.approved_at = datetime.now(timezone.utc)
         raw_key = self.generate_api_key(user.id)
         self.db.commit()
         logger.info(f"User {user.email} approved by admin {admin_id}")
@@ -91,11 +65,6 @@ class AuthService:
         user = self.db.query(User).filter(User.id == user_id).first()
         if not user:
             raise ValueError("User not found")
-        if self._user_has_column("status"):
-            user.status = "rejected"
-        else:
-            if self._user_has_column("is_active"):
-                user.is_active = False
         self.db.commit()
         logger.info(f"User {user.email} rejected")
 
@@ -123,12 +92,7 @@ class AuthService:
             if bcrypt.checkpw(raw_key.encode(), key.key_hash.encode()):
                 user = self.db.query(User).filter(User.id == key.user_id).first()
                 if user:
-                    if self._user_has_column("status") and user.status in ("approved", "active"):
-                        return user, key
-                    elif self._user_has_column("is_active") and user.is_active:
-                        return user, key
-                    elif not self._user_has_column("status") and not self._user_has_column("is_active"):
-                        return user, key
+                    return user, key
         return None, None
 
     def create_pairing_code(self, user_id: uuid.UUID, device_name: str) -> str:
@@ -181,10 +145,5 @@ class AuthService:
         user = self.db.query(User).filter(User.email == email).first()
         if not user or not self.verify_password(password, user.password_hash):
             raise ValueError("Invalid credentials")
-        if self._user_has_column("status") and user.status != "approved":
-            raise ValueError("User account not approved")
-        if self._user_has_column("is_active") and not user.is_active:
-            raise ValueError("User account not active")
-        # optional device check (skip for now)
-        token = create_jwt(str(user.id), user.tenant, user.role if self._user_has_column("role") else "user")
+        token = create_jwt(str(user.id), user.tenant, "user")
         return token
