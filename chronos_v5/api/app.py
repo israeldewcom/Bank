@@ -160,6 +160,7 @@ def ensure_api_keys_table():
         logger.info("✅ api_keys table ready")
     except Exception as e:
         logger.error(f"Failed to create api_keys table: {e}")
+        db.rollback()
     finally:
         db.close()
 
@@ -231,6 +232,7 @@ def ensure_admin_exists():
         logger.info("📋 Copy this key now – it will not be shown again.")
     except Exception as e:
         logger.error(f"Failed to create admin: {e}")
+        db.rollback()
     finally:
         db.close()
 
@@ -299,6 +301,7 @@ def run_self_test_db():
             return False
     except Exception as e:
         logger.error(f"Self‑test DB setup failed: {e}")
+        db.rollback()
         return False
     finally:
         db.close()
@@ -319,12 +322,10 @@ async def run_http_concurrency_test():
         now = datetime.now(timezone.utc)
         hashed = bcrypt.hashpw(b"temp_pass", bcrypt.gensalt()).decode()
 
-        # Build columns dynamically – include is_active, status, role only if they exist
         columns = [col for col in USER_COLUMNS if col in [
             "id", "email", password_col, "full_name", "tenant",
             "created_at", "is_active", "trial_expiry", "last_login"
         ]]
-        # Add status and role if present
         for col in ["status", "role"]:
             if col in USER_COLUMNS:
                 columns.append(col)
@@ -371,6 +372,8 @@ async def run_http_concurrency_test():
         db.close()
     except Exception as e:
         logger.error(f"HTTP concurrency test DB setup failed: {e}")
+        db.rollback()
+        db.close()
         return
 
     logger.info(f"HTTP concurrency test: created temporary user {test_email}")
