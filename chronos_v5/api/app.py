@@ -94,37 +94,96 @@ if Config.ENV != "production" or os.getenv("ADVANCED_FEATURES_ENABLED", "false")
         logger.warning(f"Advanced API not available: {e}")
 
 # ============================================================
-# SELF‑TEST FUNCTION (embedded to avoid import issues)
+# ADMIN CREATION ON STARTUP
+# ============================================================
+def ensure_admin_exists():
+    """
+    Checks if any admin user exists; if not, creates one using
+    environment variables ADMIN_EMAIL and ADMIN_PASSWORD (defaults).
+    """
+    db = SyncSessionLocal()
+    try:
+        # Check for existing admin
+        admin_exists = db.query(User).filter(User.role == "admin").first()
+        if admin_exists:
+            logger.info("Admin user already exists – skipping creation.")
+            return
+
+        # Get credentials from env or use defaults (safe for dev)
+        admin_email = os.getenv("ADMIN_EMAIL", "admin@chronos.local")
+        admin_password = os.getenv("ADMIN_PASSWORD", "Admin123!")  # Strong default
+
+        # Hash password
+        hashed = bcrypt.hashpw(admin_password.encode(), bcrypt.gensalt()).decode()
+
+        # Create admin user
+        admin = User(
+            id=uuid.uuid4(),
+            email=admin_email,
+            hashed_password=hashed,
+            full_name="System Admin",
+            status="approved",
+            role="admin",
+            tenant="default",
+            created_at=datetime.now(timezone.utc)
+        )
+        db.add(admin)
+        db.commit()
+        logger.info(f"✅ Admin user created with email: {admin_email}")
+
+        # Optionally generate an API key for the admin and log it (only once)
+        raw_key = secrets.token_urlsafe(32)
+        api_key = APIKey(
+            user_id=admin.id,
+            key_prefix=raw_key[:12],
+            key_hash=bcrypt.hashpw(raw_key.encode(), bcrypt.gensalt()).decode(),
+            tenant="default"
+        )
+        db.add(api_key)
+        db.commit()
+        logger.info(f"🔑 Admin API key (copy this): {raw_key}")
+    except Exception as e:
+        logger.error(f"Failed to create admin: {e}")
+    finally:
+        db.close()
+
+# ============================================================
+# SELF‑TEST FUNCTION (with schema fallback)
 # ============================================================
 async def run_self_test():
     """Runs 50 concurrent POST requests with same idempotency key."""
     base_url = f"http://localhost:{os.getenv('PORT', '10000')}"
     db = SyncSessionLocal()
 
-    # Create temporary test user and API key
-    test_email = f"self_test_{uuid.uuid4().hex[:8]}@chronos.local"
-    test_user = User(
-        id=uuid.uuid4(),
-        email=test_email,
-        hashed_password=bcrypt.hashpw(b"temp_pass", bcrypt.gensalt()).decode(),
-        full_name="Self Test",
-        status="approved",
-        role="user",
-        tenant="default"
-    )
-    db.add(test_user)
-    db.commit()
+    try:
+        # Create temporary test user and API key
+        test_email = f"self_test_{uuid.uuid4().hex[:8]}@chronos.local"
+        test_user = User(
+            id=uuid.uuid4(),
+            email=test_email,
+            hashed_password=bcrypt.hashpw(b"temp_pass", bcrypt.gensalt()).decode(),
+            full_name="Self Test",
+            status="approved",
+            role="user",
+            tenant="default"
+        )
+        db.add(test_user)
+        db.commit()
 
-    raw_key = secrets.token_urlsafe(32)
-    api_key = APIKey(
-        user_id=test_user.id,
-        key_prefix=raw_key[:12],
-        key_hash=bcrypt.hashpw(raw_key.encode(), bcrypt.gensalt()).decode(),
-        tenant="default"
-    )
-    db.add(api_key)
-    db.commit()
-    db.close()
+        raw_key = secrets.token_urlsafe(32)
+        api_key = APIKey(
+            user_id=test_user.id,
+            key_prefix=raw_key[:12],
+            key_hash=bcrypt.hashpw(raw_key.encode(), bcrypt.gensalt()).decode(),
+            tenant="default"
+        )
+        db.add(api_key)
+        db.commit()
+        db.close()
+    except Exception as e:
+        db.close()
+        logger.error(f"Self‑test DB setup failed (schema mismatch?): {e}")
+        return False
 
     logger.info(f"Self‑test: created temporary user {test_email} with API key")
 
@@ -163,6 +222,9 @@ async def run_self_test():
 # ============================================================
 @app.on_event("startup")
 async def startup():
+    # --- Admin creation (synchronous) ---
+    ensure_admin_exists()
+
     # --- Rate limiter ---
     if Config.ENV == "test":
         logger.info("Rate limiter disabled in test mode")
@@ -177,10 +239,8 @@ async def startup():
             await async_database.connect()
             logger.info("Async DB connected")
 
-    # --- Self‑test ---
-    run_self_test_flag = os.getenv("RUN_SELFTEST", "false").lower() == "true"
-    logger.info(f"RUN_SELFTEST env: {run_self_test_flag}")
-    if run_self_test_flag:
+    # --- Self‑test (only if explicitly enabled) ---
+    if os.getenv("RUN_SELFTEST", "false").lower() == "true":
         try:
             passed = await run_self_test()
             if not passed:
