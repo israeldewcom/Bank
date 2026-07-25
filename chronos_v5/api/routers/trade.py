@@ -51,7 +51,7 @@ async def ingest_trade_async(
     trade: TradeIngest,
     background_tasks: BackgroundTasks,
     request: Request,
-    current_user: User = Depends(get_current_user)  # <-- replaced get_api_key
+    current_user: User = Depends(get_current_user)
 ):
     tenant = get_tenant_from_request(request)
     if not Config.ASYNC_DB or async_database is None:
@@ -88,7 +88,7 @@ def ingest_trade_sync(
     trade: TradeIngest,
     background_tasks: BackgroundTasks,
     request: Request,
-    current_user: User = Depends(get_current_user)  # <-- replaced get_api_key
+    current_user: User = Depends(get_current_user)
 ):
     from chronos_v5.repositories.trade_repository import TradeRepository
     tenant = get_tenant_from_request(request)
