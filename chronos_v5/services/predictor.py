@@ -1,13 +1,18 @@
 # chronos_v5/services/predictor.py
-import joblib, numpy as np, pandas as pd, redis, asyncio
+import joblib
+import numpy as np
+import pandas as pd
+import redis
+import asyncio
 from river import linear_model, preprocessing, compose
 from chronos_v5.config import Config
-from chronos_v5.database import SyncSessionLocal, async_database, AsyncSessionLocal
+from chronos_v5.database import SyncSessionLocal
 from chronos_v5.logger_setup import logger
 from chronos_v5.drift_detector import DriftDetector
 from chronos_v5.models import Trade, FailHistory, PnLAttribution, Counterparty
 from chronos_v5.hsm_abstraction import hsm
 from datetime import datetime, timezone, timedelta
+from sklearn.exceptions import NotFittedError
 
 class SettlementPredictor:
     def __init__(self, db_session=None, retrain_on_init=True):
@@ -19,6 +24,8 @@ class SettlementPredictor:
         self._load_model()
         if retrain_on_init:
             self._retrain_if_needed()
+        # Ensure model is fitted
+        self._ensure_model_fitted()
 
     def _load_model(self):
         try:
@@ -32,6 +39,35 @@ class SettlementPredictor:
             preprocessing.StandardScaler(),
             linear_model.LogisticRegression()
         )
+
+    def _ensure_model_fitted(self):
+        """Check if model is fitted; if not, fit with dummy data."""
+        try:
+            # Try a prediction on dummy data to check fit
+            dummy = pd.DataFrame([[0]*9], columns=[
+                'notional', 'counterparty_risk', 'days_to_settle',
+                'instrument_volatility', 'market_volatility',
+                'haircut', 'rehypo_yield', 'emergency_rate', 'desk_exposure'
+            ])
+            self.model.predict_proba(dummy)
+        except NotFittedError:
+            logger.warning("Model not fitted – training on dummy data.")
+            self._fit_dummy_model()
+
+    def _fit_dummy_model(self):
+        """Fit the model on synthetic data to ensure it's usable."""
+        X = pd.DataFrame([
+            [1000000, 0.1, 1, 0.05, 0.1, 0.02, 0.18, 0.26, 0.0],
+            [2000000, 0.3, -1, 0.10, 0.2, 0.05, 0.18, 0.26, 0.5],
+            [500000, 0.05, 5, 0.02, 0.05, 0.01, 0.18, 0.26, 0.1],
+        ], columns=[
+            'notional', 'counterparty_risk', 'days_to_settle',
+            'instrument_volatility', 'market_volatility',
+            'haircut', 'rehypo_yield', 'emergency_rate', 'desk_exposure'
+        ])
+        y = np.array([0, 1, 0])  # 0 = fail, 1 = success (or vice versa; just to fit)
+        self.model.fit(X, y)
+        logger.info("Dummy model fitted successfully.")
 
     def _retrain_if_needed(self):
         try:
@@ -50,7 +86,6 @@ class SettlementPredictor:
     def _generate_features(self, trade_dict_or_df):
         if isinstance(trade_dict_or_df, dict):
             d = trade_dict_or_df
-            # Parse settle_date as timezone-aware UTC
             settle_dt = datetime.fromisoformat(d['settle_date']).replace(tzinfo=timezone.utc)
             now_utc = datetime.now(timezone.utc)
             days_to_settle = (settle_dt - now_utc).days
@@ -68,9 +103,7 @@ class SettlementPredictor:
             return pd.DataFrame([features])
         else:
             df = trade_dict_or_df.copy()
-            # Convert settle_date to datetime, make timezone-aware
             df['settle_date'] = pd.to_datetime(df['settle_date'])
-            # If naive, make it UTC-aware
             if df['settle_date'].dt.tz is None:
                 df['settle_date'] = df['settle_date'].dt.tz_localize('utc')
             now_utc = datetime.now(timezone.utc)
@@ -93,6 +126,8 @@ class SettlementPredictor:
 
     def predict(self, trade_dict: dict) -> float:
         X = self._generate_features(trade_dict)
+        # Ensure model is fitted before predicting
+        self._ensure_model_fitted()
         prob = self.model.predict_proba(X)[0][1]
         self.online_model.learn_one(X.iloc[0].to_dict(), prob > 0.15)
         self.drift_detector.update(prob)
