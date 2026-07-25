@@ -1,4 +1,4 @@
-# chronos_v5/api/routers/trade.py
+ # chronos_v5/api/routers/trade.py
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Request
 from fastapi_limiter.depends import RateLimiter
 from pydantic import BaseModel, Field, validator
@@ -31,7 +31,10 @@ class TradeIngest(BaseModel):
     def validate_settle_date(cls, v):
         try:
             dt = datetime.fromisoformat(v)
-            if dt < datetime.now(timezone.utc):
+            # Make dt naive UTC (no timezone info) for comparison
+            dt = dt.replace(tzinfo=None)
+            # Compare with naive UTC now
+            if dt < datetime.utcnow():
                 raise ValueError("Settle date must be in future")
             return v
         except ValueError as e:
@@ -45,7 +48,7 @@ class TradeResponse(BaseModel):
     price: Optional[dict] = None
 
 def safe_delay(task, *args, **kwargs):
-    """Wrap Celery delay in try/except to avoid connection errors."""
+    """Wrap Celery delay in try/except to avoid connection errors failing the response."""
     try:
         return task.delay(*args, **kwargs)
     except Exception as e:
