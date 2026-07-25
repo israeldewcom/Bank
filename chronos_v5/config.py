@@ -1,4 +1,4 @@
-# chronos_v5/config.py
+ # chronos_v5/config.py
 import os
 import base64
 import secrets
@@ -27,20 +27,20 @@ class Config:
     REDIS_SENTINEL_MASTER = os.getenv("REDIS_SENTINEL_MASTER", "mymaster")
 
     # ===== CELERY =====
-    # Use REDIS_URL as fallback for broker if not set
-    _default_broker = f"{REDIS_URL}/1" if REDIS_URL else "redis://localhost:6379/1"
-    CELERY_BROKER_URL = os.getenv("CELERY_BROKER_URL", _default_broker)
-    CELERY_RESULT_BACKEND = os.getenv("CELERY_RESULT_BACKEND", f"{REDIS_URL}/2" if REDIS_URL else "redis://localhost:6379/2")
-    CELERY_TASK_ALWAYS_EAGER = os.getenv("CELERY_TASK_ALWAYS_EAGER", "true").lower() == "true"  # default true to avoid broker issues
+    # Automatically use the same Redis host as REDIS_URL, with different DB indexes
+    _base_redis = REDIS_URL.rstrip('/')
+    CELERY_BROKER_URL = os.getenv("CELERY_BROKER_URL", f"{_base_redis}/1")
+    CELERY_RESULT_BACKEND = os.getenv("CELERY_RESULT_BACKEND", f"{_base_redis}/2")
+    CELERY_TASK_ALWAYS_EAGER = os.getenv("CELERY_TASK_ALWAYS_EAGER", "false").lower() == "true"
     CELERY_TASK_TIME_LIMIT = int(os.getenv("CELERY_TASK_TIME_LIMIT", "600"))
     CELERY_TASK_SOFT_TIME_LIMIT = int(os.getenv("CELERY_TASK_SOFT_TIME_LIMIT", "540"))
 
     # ===== SECURITY =====
-    API_KEY = os.getenv("CHRONOS_API_KEY", None)  # Must be set
+    API_KEY = os.getenv("CHRONOS_API_KEY", None)
     ENV = os.getenv("CHRONOS_ENV", "development")
     RATE_LIMIT = os.getenv("CHRONOS_RATE_LIMIT", "100 per minute")
     ALLOWED_HOSTS = os.getenv("ALLOWED_HOSTS", "*").split(",")
-    SECRET_KEY = os.getenv("SECRET_KEY", None)  # Must be set
+    SECRET_KEY = os.getenv("SECRET_KEY", None)
     ENCRYPTION_KEY = os.getenv("ENCRYPTION_KEY", None)
 
     # ===== NEW AUTH SETTINGS =====
@@ -196,7 +196,7 @@ class Config:
 
     @classmethod
     def validate(cls):
-        # ... (keep existing validation) ...
+        # ... keep your existing validation logic ...
         pass
 
 # Auto‑validate on import
