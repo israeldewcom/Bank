@@ -108,35 +108,24 @@ class RiskMetrics(Base):
     capital_usage = Column(Float)
     timestamp = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
-# === AUTH TABLES – MATCH LIVE SCHEMA ===
+# === AUTH TABLES – MATCH LIVE SCHEMA (VARCHAR IDs) ===
 class User(Base):
     __tablename__ = "users"
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     email = Column(String(255), unique=True, nullable=False, index=True)
-    password_hash = Column(String(255), nullable=False)   # ✅ matches live DB
+    password_hash = Column(String(255), nullable=False)
     full_name = Column(String(255))
     is_active = Column(Boolean, default=True)
     trial_expiry = Column(DateTime, nullable=True)
     last_login = Column(DateTime, nullable=True)
     tenant = Column(String(50), default="default", nullable=False, index=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
-    # The following columns do NOT exist in the live DB – we add them as optional
-    # so that SQLAlchemy doesn't try to query them.
-    # We'll mark them as deferred or not used.
-    # For simplicity, we'll comment them out – the code will use only existing columns.
-    # status = Column(String(20))  # not in live DB
-    # role = Column(String(20))    # not in live DB
-    # approved_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
-    # approved_at = Column(DateTime, nullable=True)
+    # No status, role, approved_by, approved_at – not in live DB
 
-# We'll create separate tables for the new auth system if needed, but for now
-# we keep the User model minimal to match live DB.
-
-# The following tables may not exist yet – we'll let the self-test create them.
 class APIKey(Base):
     __tablename__ = "api_keys"
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id = Column(String(36), ForeignKey("users.id"), nullable=False)
     key_prefix = Column(String(20), nullable=False)
     key_hash = Column(String(255), nullable=False)
     tenant = Column(String(50), default="default", nullable=False, index=True)
@@ -146,21 +135,21 @@ class APIKey(Base):
 
 class Device(Base):
     __tablename__ = "devices"
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id = Column(String(36), ForeignKey("users.id"), nullable=False)
     device_name = Column(String(255))
     device_fingerprint = Column(String(255), nullable=False)
     status = Column(SQLAEnum("pending", "approved", "revoked", name="device_status"), default="pending")
     tenant = Column(String(50), default="default", nullable=False, index=True)
     requested_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
-    approved_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    approved_by = Column(String(36), ForeignKey("users.id"), nullable=True)
     approved_at = Column(DateTime, nullable=True)
     last_used_at = Column(DateTime, nullable=True)
 
 class PairingCode(Base):
     __tablename__ = "pairing_codes"
     code = Column(String(10), primary_key=True)
-    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    user_id = Column(String(36), ForeignKey("users.id"), nullable=False)
     device_name = Column(String(255))
     expires_at = Column(DateTime, nullable=False)
     consumed = Column(Boolean, default=False)
