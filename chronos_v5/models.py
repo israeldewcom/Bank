@@ -2,7 +2,7 @@
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy import (
     Column, String, Float, Integer, Boolean, DateTime,
-    Text, BigInteger, ForeignKey, Index, JSON, Enum as SQLAEnum
+    Text, BigInteger, ForeignKey, JSON, Enum as SQLAEnum
 )
 from datetime import datetime, timezone
 import uuid
@@ -10,7 +10,7 @@ from sqlalchemy.dialects.postgresql import UUID
 
 Base = declarative_base()
 
-# === EXISTING TABLES (unchanged) ===
+# === EXISTING TABLES ===
 class Trade(Base):
     __tablename__ = "trades"
     id = Column(String(36), primary_key=True)
@@ -26,7 +26,6 @@ class Trade(Base):
     price_quote = Column(JSON, nullable=True)
     idempotency_key = Column(String(100), unique=True, nullable=True)
     encrypted_counterparty = Column(Text, nullable=True)
-    tenant = Column(String(50), default="default", nullable=False, index=True)  # NEW
 
 class Counterparty(Base):
     __tablename__ = "counterparties"
@@ -56,7 +55,6 @@ class PnLAttribution(Base):
     currency = Column(String(10), default="NGN")
     timestamp = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     metadata_json = Column(Text, nullable=True)
-    tenant = Column(String(50), default="default", nullable=False, index=True)  # NEW
 
 class CollateralHolding(Base):
     __tablename__ = "collateral_holdings"
@@ -110,21 +108,31 @@ class RiskMetrics(Base):
     capital_usage = Column(Float)
     timestamp = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
-# === NEW TABLES (AUTH + TENANT CONFIG) ===
-
+# === AUTH TABLES – MATCH LIVE SCHEMA ===
 class User(Base):
     __tablename__ = "users"
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     email = Column(String(255), unique=True, nullable=False, index=True)
-    hashed_password = Column(String(255), nullable=False)
+    password_hash = Column(String(255), nullable=False)   # ✅ matches live DB
     full_name = Column(String(255))
-    status = Column(SQLAEnum("pending", "approved", "rejected", "suspended", name="user_status"), default="pending")
-    role = Column(SQLAEnum("user", "developer", "admin", name="user_role"), default="user")
+    is_active = Column(Boolean, default=True)
+    trial_expiry = Column(DateTime, nullable=True)
+    last_login = Column(DateTime, nullable=True)
     tenant = Column(String(50), default="default", nullable=False, index=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
-    approved_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
-    approved_at = Column(DateTime, nullable=True)
+    # The following columns do NOT exist in the live DB – we add them as optional
+    # so that SQLAlchemy doesn't try to query them.
+    # We'll mark them as deferred or not used.
+    # For simplicity, we'll comment them out – the code will use only existing columns.
+    # status = Column(String(20))  # not in live DB
+    # role = Column(String(20))    # not in live DB
+    # approved_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    # approved_at = Column(DateTime, nullable=True)
 
+# We'll create separate tables for the new auth system if needed, but for now
+# we keep the User model minimal to match live DB.
+
+# The following tables may not exist yet – we'll let the self-test create them.
 class APIKey(Base):
     __tablename__ = "api_keys"
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -141,7 +149,7 @@ class Device(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
     device_name = Column(String(255))
-    device_fingerprint = Column(String(255), nullable=False)  # <-- now NOT NULL
+    device_fingerprint = Column(String(255), nullable=False)
     status = Column(SQLAEnum("pending", "approved", "revoked", name="device_status"), default="pending")
     tenant = Column(String(50), default="default", nullable=False, index=True)
     requested_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
@@ -151,7 +159,7 @@ class Device(Base):
 
 class PairingCode(Base):
     __tablename__ = "pairing_codes"
-    code = Column(String(10), primary_key=True)  # 6‑digit, short‑lived
+    code = Column(String(10), primary_key=True)
     user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
     device_name = Column(String(255))
     expires_at = Column(DateTime, nullable=False)
