@@ -426,7 +426,7 @@ async def run_http_concurrency_test():
             return 0, {"error": str(e)}
 
     idempotency_key = f"concurrent_{uuid.uuid4().hex}"
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(timeout=30.0) as client:
         tasks = [send_trade(client, idempotency_key) for _ in range(50)]
         results = await asyncio.gather(*tasks)
 
