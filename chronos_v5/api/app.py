@@ -93,10 +93,11 @@ if Config.ENV != "production" or os.getenv("ADVANCED_FEATURES_ENABLED", "false")
         logger.warning(f"Advanced API not available: {e}")
 
 # ============================================================
-# SCHEMA DETECTION & TABLE CREATION
+# SCHEMA DETECTION
 # ============================================================
 USER_COLUMNS = []
 PASSWORD_COLUMN = None
+TRADES_COLUMNS = []
 
 def detect_user_columns():
     global USER_COLUMNS, PASSWORD_COLUMN
@@ -121,6 +122,21 @@ def detect_user_columns():
                     break
     except Exception as e:
         logger.error(f"Failed to detect columns: {e}")
+    finally:
+        db.close()
+
+def detect_trades_columns():
+    global TRADES_COLUMNS
+    db = SyncSessionLocal()
+    try:
+        result = db.execute(text("""
+            SELECT column_name FROM information_schema.columns
+            WHERE table_name='trades'
+        """))
+        TRADES_COLUMNS = [row[0] for row in result.fetchall()]
+        logger.info(f"Detected columns in trades table: {TRADES_COLUMNS}")
+    except Exception as e:
+        logger.error(f"Failed to detect trades columns: {e}")
     finally:
         db.close()
 
@@ -218,7 +234,7 @@ def ensure_admin_exists():
         db.close()
 
 # ============================================================
-# DB‑BASED IDEMPOTENCY SELF‑TEST (no HTTP)
+# DB‑BASED IDEMPOTENCY SELF‑TEST (dynamic columns)
 # ============================================================
 def run_self_test_db():
     """
@@ -227,67 +243,59 @@ def run_self_test_db():
     Expects a unique violation on the second insert.
     Logs PASS/FAIL.
     """
+    if not TRADES_COLUMNS:
+        logger.warning("Trades columns not detected – skipping self‑test.")
+        return False
+
     db = SyncSessionLocal()
     try:
         # Generate a unique idempotency key
         idempotency_key = f"self_test_{uuid.uuid4().hex}"
 
-        # First insert – should succeed
-        trade_id1 = str(uuid.uuid4())
+        # Build the INSERT for trades using only existing columns
+        # Required columns: id, desk, counterparty_id, notional, settle_date, created_at, status, fail_probability, idempotency_key
+        # Optional: instrument_type, currency, tenant (if exists)
+        base_cols = ["id", "desk", "counterparty_id", "notional", "settle_date", "created_at", "status", "fail_probability", "idempotency_key"]
+        optional_cols = ["instrument_type", "currency", "tenant"]
+        insert_cols = [c for c in base_cols + optional_cols if c in TRADES_COLUMNS]
+        placeholders = ", ".join([f":{c}" for c in insert_cols])
+        sql = f"INSERT INTO trades ({', '.join(insert_cols)}) VALUES ({placeholders})"
+
         now = datetime.now(timezone.utc)
         settle_date = now + timedelta(days=1)
-        db.execute(
-            text("""
-                INSERT INTO trades (id, desk, counterparty_id, instrument_type, currency, notional, settle_date, created_at, status, fail_probability, idempotency_key, tenant)
-                VALUES (:id, :desk, :counterparty_id, :instrument_type, :currency, :notional, :settle_date, :created_at, :status, :fail_probability, :idempotency_key, :tenant)
-            """),
-            {
-                "id": trade_id1,
-                "desk": "SELF_TEST",
-                "counterparty_id": "SELF",
-                "instrument_type": "TEST",
-                "currency": "NGN",
-                "notional": 1000,
-                "settle_date": settle_date,
-                "created_at": now,
-                "status": "PENDING",
-                "fail_probability": 0.0,
-                "idempotency_key": idempotency_key,
-                "tenant": "default"
-            }
-        )
+
+        # First insert – should succeed
+        params = {
+            "id": str(uuid.uuid4()),
+            "desk": "SELF_TEST",
+            "counterparty_id": "SELF",
+            "notional": 1000,
+            "settle_date": settle_date,
+            "created_at": now,
+            "status": "PENDING",
+            "fail_probability": 0.0,
+            "idempotency_key": idempotency_key
+        }
+        if "instrument_type" in insert_cols:
+            params["instrument_type"] = "TEST"
+        if "currency" in insert_cols:
+            params["currency"] = "NGN"
+        if "tenant" in insert_cols:
+            params["tenant"] = "default"
+
+        db.execute(text(sql), params)
         db.commit()
 
         # Second insert – should fail with unique violation
-        trade_id2 = str(uuid.uuid4())
+        params2 = params.copy()
+        params2["id"] = str(uuid.uuid4())
         try:
-            db.execute(
-                text("""
-                    INSERT INTO trades (id, desk, counterparty_id, instrument_type, currency, notional, settle_date, created_at, status, fail_probability, idempotency_key, tenant)
-                    VALUES (:id, :desk, :counterparty_id, :instrument_type, :currency, :notional, :settle_date, :created_at, :status, :fail_probability, :idempotency_key, :tenant)
-                """),
-                {
-                    "id": trade_id2,
-                    "desk": "SELF_TEST",
-                    "counterparty_id": "SELF",
-                    "instrument_type": "TEST",
-                    "currency": "NGN",
-                    "notional": 1000,
-                    "settle_date": settle_date,
-                    "created_at": now,
-                    "status": "PENDING",
-                    "fail_probability": 0.0,
-                    "idempotency_key": idempotency_key,
-                    "tenant": "default"
-                }
-            )
+            db.execute(text(sql), params2)
             db.commit()
-            # If we reach here, no exception – test fails
             logger.error("⚠️ Self‑test FAILED – duplicate insert succeeded!")
             return False
         except exc.IntegrityError as e:
             db.rollback()
-            # Expected – unique constraint violation
             logger.info("Self‑test: duplicate insert correctly blocked (unique violation).")
             return True
         except Exception as e:
@@ -310,6 +318,7 @@ async def startup():
 
     # --- Detect actual schema ---
     detect_user_columns()
+    detect_trades_columns()
 
     # --- Admin creation ---
     ensure_admin_exists()
