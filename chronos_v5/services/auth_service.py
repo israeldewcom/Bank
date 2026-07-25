@@ -53,18 +53,17 @@ class AuthService:
         logger.info(f"User registered: {email} (tenant: {tenant})")
         return user
 
-    def approve_user(self, user_id: uuid.UUID, admin_id: uuid.UUID):
+    def approve_user(self, user_id: str, admin_id: str):
         user = self.db.query(User).filter(User.id == user_id).first()
         if not user:
             raise ValueError("User not found")
-        # No status column – just set active
         user.is_active = True
         raw_key = self.generate_api_key(user.id)
         self.db.commit()
         logger.info(f"User {user.email} approved by admin {admin_id}")
         return raw_key
 
-    def reject_user(self, user_id: uuid.UUID):
+    def reject_user(self, user_id: str):
         user = self.db.query(User).filter(User.id == user_id).first()
         if not user:
             raise ValueError("User not found")
@@ -72,7 +71,7 @@ class AuthService:
         self.db.commit()
         logger.info(f"User {user.email} rejected")
 
-    def generate_api_key(self, user_id: uuid.UUID) -> str:
+    def generate_api_key(self, user_id: str) -> str:
         raw = secrets.token_urlsafe(32)
         prefix = raw[:12]
         hashed = bcrypt.hashpw(raw.encode(), bcrypt.gensalt()).decode()
@@ -104,7 +103,7 @@ class AuthService:
             self.db.rollback()
             return None, None
 
-    def create_pairing_code(self, user_id: uuid.UUID, device_name: str) -> str:
+    def create_pairing_code(self, user_id: str, device_name: str) -> str:
         code = f"{secrets.randbelow(1000000):06d}"
         expires = datetime.now(timezone.utc) + timedelta(minutes=5)
         pairing = PairingCode(
@@ -138,7 +137,7 @@ class AuthService:
         self.db.refresh(device)
         return device
 
-    def approve_device(self, device_id: uuid.UUID, admin_id: uuid.UUID):
+    def approve_device(self, device_id: str, admin_id: str):
         device = self.db.query(Device).filter(Device.id == device_id).first()
         if not device:
             raise ValueError("Device not found")
@@ -156,7 +155,6 @@ class AuthService:
             raise ValueError("Invalid credentials")
         if not user.is_active:
             raise ValueError("User account not active")
-        # Device check – if devices exist
         device = self.db.query(Device).filter(
             Device.user_id == user.id,
             Device.device_fingerprint == device_fingerprint,
@@ -166,6 +164,5 @@ class AuthService:
             raise ValueError("Device not approved or does not exist")
         device.last_used_at = datetime.now(timezone.utc)
         self.db.commit()
-        # We don't have role column – we'll assign 'user' as default
-        token = create_jwt(str(user.id), user.tenant, "user")
+        token = create_jwt(user.id, user.tenant, "user")  # no role column
         return token
