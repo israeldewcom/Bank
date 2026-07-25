@@ -1,4 +1,4 @@
- # chronos_v5/api/app.py
+# chronos_v5/api/app.py
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
@@ -8,6 +8,10 @@ import redis.asyncio as aioredis
 import redis
 import asyncio
 import os
+import uuid
+import bcrypt
+import secrets
+import httpx
 from datetime import datetime, timezone
 from chronos_v5.config import Config
 from chronos_v5.api.middleware import CorrelationIdMiddleware
@@ -63,7 +67,7 @@ if Config.OTEL_ENABLED:
     except ImportError as e:
         logger.warning(f"OpenTelemetry import failed: {e}")
 
-# --- EXISTING ROUTERS ---
+# --- ROUTERS (unchanged) ---
 app.include_router(trade.router, prefix="/trade", tags=["Trade"])
 app.include_router(collateral.router, prefix="/collateral", tags=["Collateral"])
 app.include_router(risk.router, prefix="/risk", tags=["Risk"])
@@ -75,8 +79,6 @@ app.include_router(pricing.router, prefix="/pricing", tags=["Pricing"])
 app.include_router(execution.router, prefix="/execution", tags=["Execution"])
 app.include_router(nibss.router, prefix="/nibss", tags=["NIBSS"])
 app.include_router(websocket.router, prefix="/ws", tags=["WebSocket"])
-
-# --- NEW AUTH/TENANT ROUTERS ---
 app.include_router(auth.router, prefix="/auth", tags=["Authentication"])
 app.include_router(admin.router, prefix="/admin", tags=["Admin"])
 app.include_router(dashboard_tenant.router, prefix="/tenant", tags=["Tenant Dashboard"])
@@ -90,9 +92,77 @@ if Config.ENV != "production" or os.getenv("ADVANCED_FEATURES_ENABLED", "false")
     except ImportError as e:
         logger.warning(f"Advanced API not available: {e}")
 
+# ============================================================
+# SELF‑TEST FUNCTION (embedded to avoid import issues)
+# ============================================================
+async def run_self_test():
+    """Runs 50 concurrent POST requests with same idempotency key."""
+    base_url = f"http://localhost:{os.getenv('PORT', '10000')}"
+    db = SyncSessionLocal()
+
+    # Create temporary test user and API key
+    test_email = f"self_test_{uuid.uuid4().hex[:8]}@chronos.local"
+    test_user = User(
+        id=uuid.uuid4(),
+        email=test_email,
+        hashed_password=bcrypt.hashpw(b"temp_pass", bcrypt.gensalt()).decode(),
+        full_name="Self Test",
+        status="approved",
+        role="user",
+        tenant="default"
+    )
+    db.add(test_user)
+    db.commit()
+
+    raw_key = secrets.token_urlsafe(32)
+    api_key = APIKey(
+        user_id=test_user.id,
+        key_prefix=raw_key[:12],
+        key_hash=bcrypt.hashpw(raw_key.encode(), bcrypt.gensalt()).decode(),
+        tenant="default"
+    )
+    db.add(api_key)
+    db.commit()
+    db.close()
+
+    logger.info(f"Self‑test: created temporary user {test_email} with API key")
+
+    async def send_trade(client, idempotency_key):
+        payload = {
+            "id": str(uuid.uuid4()),
+            "desk": "SELF_TEST",
+            "counterparty_id": "SELF",
+            "currency": "NGN",
+            "notional": 1000,
+            "settle_date": "2026-12-31T00:00:00",
+            "idempotency_key": idempotency_key
+        }
+        resp = await client.post(
+            f"{base_url}/trade/ingest_sync",
+            json=payload,
+            headers={"X-API-Key": raw_key, "X-Tenant": "default"}
+        )
+        return resp.status_code, resp.json()
+
+    idempotency_key = f"self_test_{uuid.uuid4().hex}"
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        tasks = [send_trade(client, idempotency_key) for _ in range(50)]
+        results = await asyncio.gather(*tasks)
+
+    successes = [r[1] for r in results if r[0] == 200]
+    ingested = [r[1] for r in successes if r[1].get("status") == "INGESTED"]
+    duplicates = [r[1] for r in successes if r[1].get("status") == "DUPLICATE"]
+
+    passed = len(ingested) == 1 and len(duplicates) == 49
+    logger.info(f"Self‑test: {len(ingested)} INGESTED, {len(duplicates)} DUPLICATE → {'PASS' if passed else 'FAIL'}")
+    return passed
+
+# ============================================================
+# LIFECYCLE EVENTS
+# ============================================================
 @app.on_event("startup")
 async def startup():
-    # --- FastAPILimiter with async Redis ---
+    # --- Rate limiter ---
     if Config.ENV == "test":
         logger.info("Rate limiter disabled in test mode")
     else:
@@ -106,13 +176,10 @@ async def startup():
             await async_database.connect()
             logger.info("Async DB connected")
 
-    # --- SELF‑TEST (idempotency) ---
-    run_self_test = os.getenv("RUN_SELFTEST", "false").lower() == "true"
-    logger.info(f"RUN_SELFTEST env: {run_self_test}")
-    if run_self_test:
+    # --- Self‑test ---
+    if os.getenv("RUN_SELFTEST", "false").lower() == "true":
         try:
-            from chronos_v5.tests.idempotency_self_test import run_idempotency_self_test
-            passed = await run_idempotency_self_test()
+            passed = await run_self_test()
             if not passed:
                 logger.error("⚠️ Self‑test FAILED – idempotency broken!")
             else:
