@@ -9,7 +9,7 @@ from chronos_v5.models import User, APIKey, Device, PairingCode
 from chronos_v5.utils.jwt_utils import create_jwt
 from chronos_v5.logger_setup import logger
 from chronos_v5.config import Config
-from sqlalchemy import inspect
+from sqlalchemy import inspect, exc
 
 class AuthService:
     def __init__(self):
@@ -84,16 +84,21 @@ class AuthService:
 
     def validate_api_key(self, raw_key: str) -> tuple:
         prefix = raw_key[:12]
-        candidates = self.db.query(APIKey).filter(
-            APIKey.key_prefix == prefix,
-            APIKey.revoked_at.is_(None)
-        ).all()
-        for key in candidates:
-            if bcrypt.checkpw(raw_key.encode(), key.key_hash.encode()):
-                user = self.db.query(User).filter(User.id == key.user_id).first()
-                if user:
-                    return user, key
-        return None, None
+        try:
+            candidates = self.db.query(APIKey).filter(
+                APIKey.key_prefix == prefix,
+                APIKey.revoked_at.is_(None)
+            ).all()
+            for key in candidates:
+                if bcrypt.checkpw(raw_key.encode(), key.key_hash.encode()):
+                    user = self.db.query(User).filter(User.id == key.user_id).first()
+                    if user:
+                        return user, key
+            return None, None
+        except Exception as e:
+            logger.error(f"validate_api_key error: {e}")
+            self.db.rollback()
+            return None, None
 
     def create_pairing_code(self, user_id: uuid.UUID, device_name: str) -> str:
         code = f"{secrets.randbelow(1000000):06d}"
