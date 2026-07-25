@@ -24,6 +24,7 @@ from prometheus_client import generate_latest, REGISTRY
 from fastapi.responses import Response
 from chronos_v5.database import SyncSessionLocal
 from chronos_v5.nigeria_adapter import nigeria
+from chronos_v5.models import User, APIKey
 from sqlalchemy import text
 
 app = FastAPI(
@@ -67,7 +68,7 @@ if Config.OTEL_ENABLED:
     except ImportError as e:
         logger.warning(f"OpenTelemetry import failed: {e}")
 
-# --- ROUTERS (unchanged) ---
+# --- ROUTERS ---
 app.include_router(trade.router, prefix="/trade", tags=["Trade"])
 app.include_router(collateral.router, prefix="/collateral", tags=["Collateral"])
 app.include_router(risk.router, prefix="/risk", tags=["Risk"])
@@ -177,7 +178,9 @@ async def startup():
             logger.info("Async DB connected")
 
     # --- Self‑test ---
-    if os.getenv("RUN_SELFTEST", "false").lower() == "true":
+    run_self_test_flag = os.getenv("RUN_SELFTEST", "false").lower() == "true"
+    logger.info(f"RUN_SELFTEST env: {run_self_test_flag}")
+    if run_self_test_flag:
         try:
             passed = await run_self_test()
             if not passed:
