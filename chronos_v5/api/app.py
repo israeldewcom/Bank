@@ -1,4 +1,4 @@
-# chronos_v5/api/app.py
+ # chronos_v5/api/app.py
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
@@ -107,7 +107,9 @@ async def startup():
             logger.info("Async DB connected")
 
     # --- SELF‑TEST (idempotency) ---
-    if os.getenv("RUN_SELFTEST", "false").lower() == "true":
+    run_self_test = os.getenv("RUN_SELFTEST", "false").lower() == "true"
+    logger.info(f"RUN_SELFTEST env: {run_self_test}")
+    if run_self_test:
         try:
             from chronos_v5.tests.idempotency_self_test import run_idempotency_self_test
             passed = await run_idempotency_self_test()
