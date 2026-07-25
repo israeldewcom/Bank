@@ -9,7 +9,7 @@ from chronos_v5.models import User, APIKey, Device, PairingCode
 from chronos_v5.utils.jwt_utils import create_jwt
 from chronos_v5.logger_setup import logger
 from chronos_v5.config import Config
-from sqlalchemy import inspect, exc
+from sqlalchemy import inspect
 
 class AuthService:
     def __init__(self):
@@ -44,7 +44,8 @@ class AuthService:
             password_hash=self.hash_password(password),
             full_name=full_name,
             tenant=tenant,
-            created_at=datetime.now(timezone.utc)
+            created_at=datetime.now(timezone.utc),
+            is_active=True
         )
         self.db.add(user)
         self.db.commit()
@@ -56,6 +57,8 @@ class AuthService:
         user = self.db.query(User).filter(User.id == user_id).first()
         if not user:
             raise ValueError("User not found")
+        # No status column – just set active
+        user.is_active = True
         raw_key = self.generate_api_key(user.id)
         self.db.commit()
         logger.info(f"User {user.email} approved by admin {admin_id}")
@@ -65,6 +68,7 @@ class AuthService:
         user = self.db.query(User).filter(User.id == user_id).first()
         if not user:
             raise ValueError("User not found")
+        user.is_active = False
         self.db.commit()
         logger.info(f"User {user.email} rejected")
 
@@ -92,7 +96,7 @@ class AuthService:
             for key in candidates:
                 if bcrypt.checkpw(raw_key.encode(), key.key_hash.encode()):
                     user = self.db.query(User).filter(User.id == key.user_id).first()
-                    if user:
+                    if user and user.is_active:
                         return user, key
             return None, None
         except Exception as e:
@@ -150,5 +154,18 @@ class AuthService:
         user = self.db.query(User).filter(User.email == email).first()
         if not user or not self.verify_password(password, user.password_hash):
             raise ValueError("Invalid credentials")
+        if not user.is_active:
+            raise ValueError("User account not active")
+        # Device check – if devices exist
+        device = self.db.query(Device).filter(
+            Device.user_id == user.id,
+            Device.device_fingerprint == device_fingerprint,
+            Device.status == "approved"
+        ).first()
+        if not device:
+            raise ValueError("Device not approved or does not exist")
+        device.last_used_at = datetime.now(timezone.utc)
+        self.db.commit()
+        # We don't have role column – we'll assign 'user' as default
         token = create_jwt(str(user.id), user.tenant, "user")
         return token
