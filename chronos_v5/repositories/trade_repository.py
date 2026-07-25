@@ -7,12 +7,21 @@ import uuid
 from datetime import datetime, timezone
 from chronos_v5.logger_setup import logger
 
+def _to_naive_utc(dt: datetime) -> datetime:
+    """Ensure datetime is offset-naive UTC (no timezone info)."""
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt
+
 class TradeRepository:
     def __init__(self):
         self.db = SyncSessionLocal()
 
     def insert(self, trade_data: dict, idempotency_key: str = None) -> str:
         try:
+            settle_dt = datetime.fromisoformat(trade_data['settle_date'])
+            settle_dt = _to_naive_utc(settle_dt)
+            now = datetime.now(timezone.utc).replace(tzinfo=None)
             trade = Trade(
                 id=trade_data.get('id', str(uuid.uuid4())),
                 desk=trade_data['desk'],
@@ -20,7 +29,8 @@ class TradeRepository:
                 instrument_type=trade_data.get('instrument_type'),
                 currency=trade_data['currency'],
                 notional=trade_data['notional'],
-                settle_date=datetime.fromisoformat(trade_data['settle_date']),
+                settle_date=settle_dt,
+                created_at=now,
                 idempotency_key=idempotency_key
             )
             self.db.add(trade)
@@ -61,6 +71,9 @@ class TradeRepositoryAsync:
     async def insert(self, trade_data: dict, idempotency_key: str = None) -> str:
         async with AsyncSessionLocal() as session:
             try:
+                settle_dt = datetime.fromisoformat(trade_data['settle_date'])
+                settle_dt = _to_naive_utc(settle_dt)
+                now = datetime.now(timezone.utc).replace(tzinfo=None)
                 trade = Trade(
                     id=trade_data.get('id', str(uuid.uuid4())),
                     desk=trade_data['desk'],
@@ -68,7 +81,8 @@ class TradeRepositoryAsync:
                     instrument_type=trade_data.get('instrument_type'),
                     currency=trade_data['currency'],
                     notional=trade_data['notional'],
-                    settle_date=datetime.fromisoformat(trade_data['settle_date']),
+                    settle_date=settle_dt,
+                    created_at=now,
                     idempotency_key=idempotency_key
                 )
                 session.add(trade)
