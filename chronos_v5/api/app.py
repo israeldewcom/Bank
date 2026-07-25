@@ -286,8 +286,8 @@ def run_self_test_db():
         placeholders = ", ".join([f":{c}" for c in insert_cols])
         sql = f"INSERT INTO trades ({', '.join(insert_cols)}) VALUES ({placeholders})"
 
-        now = datetime.now(timezone.utc)
-        settle_date = now + timedelta(days=1)
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        settle_date = (datetime.now(timezone.utc) + timedelta(days=1)).replace(tzinfo=None)
 
         params = {
             "id": str(uuid.uuid4()),
@@ -333,7 +333,7 @@ def run_self_test_db():
         db.close()
 
 # ============================================================
-# HTTP CONCURRENCY SELF‑TEST (background) – FIXED to use async endpoint
+# HTTP CONCURRENCY SELF‑TEST (background) – FIXED with guaranteed logging
 # ============================================================
 async def run_http_concurrency_test():
     """Background concurrency test – fires 50 requests concurrently using the async endpoint."""
@@ -345,7 +345,7 @@ async def run_http_concurrency_test():
         password_col = PASSWORD_COLUMN or "password_hash"
         test_email = f"http_test_{uuid.uuid4().hex[:8]}@chronos.local"
         test_user_id = uuid.uuid4()
-        now = datetime.now(timezone.utc)
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
         hashed = bcrypt.hashpw(b"temp_pass", bcrypt.gensalt()).decode()
 
         columns = [col for col in USER_COLUMNS if col in [
@@ -411,11 +411,10 @@ async def run_http_concurrency_test():
             "counterparty_id": "SELF",
             "currency": "NGN",
             "notional": 1000,
-            "settle_date": (datetime.now(timezone.utc) + timedelta(days=1)).isoformat(),
+            "settle_date": (datetime.now(timezone.utc) + timedelta(days=1)).replace(tzinfo=None).isoformat(),
             "idempotency_key": idempotency_key
         }
         try:
-            # Use the async endpoint to avoid blocking the event loop
             resp = await client.post(
                 f"{base_url}/trade/ingest",
                 json=payload,
@@ -429,7 +428,6 @@ async def run_http_concurrency_test():
     idempotency_key = f"concurrent_{uuid.uuid4().hex}"
     start = datetime.now()
     try:
-        # Use a single client with connection pooling; gather all 50 tasks concurrently
         async with httpx.AsyncClient(timeout=30.0) as client:
             tasks = [send_trade(client, idempotency_key) for _ in range(50)]
             results = await asyncio.gather(*tasks)
