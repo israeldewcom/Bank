@@ -1,7 +1,7 @@
 # chronos_v5/models.py
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy import (
-    Column, String, Float, Integer, Boolean, DateTime,
+    Column, String, Float, Boolean, DateTime,
     Text, BigInteger, ForeignKey, JSON, Enum as SQLAEnum
 )
 from datetime import datetime, timezone
@@ -9,7 +9,6 @@ import uuid
 
 Base = declarative_base()
 
-# === EXISTING TABLES ===
 class Trade(Base):
     __tablename__ = "trades"
     id = Column(String(36), primary_key=True)
@@ -25,6 +24,9 @@ class Trade(Base):
     price_quote = Column(JSON, nullable=True)
     idempotency_key = Column(String(100), unique=True, nullable=True)
     encrypted_counterparty = Column(Text, nullable=True)
+    tenant = Column(String(50), default="default", nullable=False, index=True)
+    nibss_ref = Column(String(100), nullable=True)
+    settled_at = Column(DateTime, nullable=True)
 
 class Counterparty(Base):
     __tablename__ = "counterparties"
@@ -54,6 +56,7 @@ class PnLAttribution(Base):
     currency = Column(String(10), default="NGN")
     timestamp = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     metadata_json = Column(Text, nullable=True)
+    tenant = Column(String(50), default="default", nullable=False, index=True)
 
 class CollateralHolding(Base):
     __tablename__ = "collateral_holdings"
@@ -107,7 +110,6 @@ class RiskMetrics(Base):
     capital_usage = Column(Float)
     timestamp = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
-# === AUTH TABLES – ALL IDs AS VARCHAR ===
 class User(Base):
     __tablename__ = "users"
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
@@ -115,6 +117,7 @@ class User(Base):
     password_hash = Column(String(255), nullable=False)
     full_name = Column(String(255))
     is_active = Column(Boolean, default=True)
+    role = Column(String(20), default="user")
     trial_expiry = Column(DateTime, nullable=True)
     last_login = Column(DateTime, nullable=True)
     tenant = Column(String(50), default="default", nullable=False, index=True)
