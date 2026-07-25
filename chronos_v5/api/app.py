@@ -24,8 +24,8 @@ from prometheus_client import generate_latest, REGISTRY
 from fastapi.responses import Response
 from chronos_v5.database import SyncSessionLocal
 from chronos_v5.nigeria_adapter import nigeria
-from chronos_v5.models import User, APIKey
-from sqlalchemy import text
+from chronos_v5.models import User, APIKey, Base
+from sqlalchemy import text, inspect
 
 app = FastAPI(
     title="Chronos v5.2 - Full Production Bank Edition",
@@ -94,44 +94,68 @@ if Config.ENV != "production" or os.getenv("ADVANCED_FEATURES_ENABLED", "false")
         logger.warning(f"Advanced API not available: {e}")
 
 # ============================================================
-# ADMIN CREATION ON STARTUP
+# DYNAMIC COLUMN DETECTION
+# ============================================================
+def get_password_column():
+    """Detect the actual column name for the password field in the User model."""
+    inspector = inspect(User)
+    columns = [c.name for c in inspector.columns]
+    for col in ["password_hash", "hashed_password", "password", "pw_hash"]:
+        if col in columns:
+            return col
+    # Fallback: return the first column that contains 'password'
+    for col in columns:
+        if "password" in col.lower():
+            return col
+    raise RuntimeError("Could not find a password column in the User model")
+
+PASSWORD_COLUMN = None
+
+# ============================================================
+# ADMIN CREATION ON STARTUP (with dynamic column)
 # ============================================================
 def ensure_admin_exists():
-    """
-    Checks if any admin user exists; if not, creates one using
-    environment variables ADMIN_EMAIL and ADMIN_PASSWORD (defaults).
-    """
+    global PASSWORD_COLUMN
+    if PASSWORD_COLUMN is None:
+        try:
+            PASSWORD_COLUMN = get_password_column()
+            logger.info(f"Detected password column: {PASSWORD_COLUMN}")
+        except Exception as e:
+            logger.error(f"Failed to detect password column: {e}")
+            return
+
     db = SyncSessionLocal()
     try:
-        # Check for existing admin
+        # Check for existing admin using the detected column
         admin_exists = db.query(User).filter(User.role == "admin").first()
         if admin_exists:
             logger.info("Admin user already exists – skipping creation.")
             return
 
-        # Get credentials from env or use defaults (safe for dev)
         admin_email = os.getenv("ADMIN_EMAIL", "admin@chronos.local")
-        admin_password = os.getenv("ADMIN_PASSWORD", "Admin123!")  # Strong default
+        admin_password = os.getenv("ADMIN_PASSWORD", "Admin123!")
 
         # Hash password
         hashed = bcrypt.hashpw(admin_password.encode(), bcrypt.gensalt()).decode()
 
-        # Create admin user
-        admin = User(
-            id=uuid.uuid4(),
-            email=admin_email,
-            hashed_password=hashed,
-            full_name="System Admin",
-            status="approved",
-            role="admin",
-            tenant="default",
-            created_at=datetime.now(timezone.utc)
-        )
+        # Create admin user with dynamic column
+        admin_kwargs = {
+            "id": uuid.uuid4(),
+            "email": admin_email,
+            "full_name": "System Admin",
+            "status": "approved",
+            "role": "admin",
+            "tenant": "default",
+            "created_at": datetime.now(timezone.utc)
+        }
+        admin_kwargs[PASSWORD_COLUMN] = hashed
+
+        admin = User(**admin_kwargs)
         db.add(admin)
         db.commit()
         logger.info(f"✅ Admin user created with email: {admin_email}")
 
-        # Optionally generate an API key for the admin and log it (only once)
+        # Generate API key
         raw_key = secrets.token_urlsafe(32)
         api_key = APIKey(
             user_id=admin.id,
@@ -148,25 +172,34 @@ def ensure_admin_exists():
         db.close()
 
 # ============================================================
-# SELF‑TEST FUNCTION (with schema fallback)
+# SELF‑TEST FUNCTION (with dynamic column)
 # ============================================================
 async def run_self_test():
-    """Runs 50 concurrent POST requests with same idempotency key."""
+    global PASSWORD_COLUMN
+    if PASSWORD_COLUMN is None:
+        try:
+            PASSWORD_COLUMN = get_password_column()
+        except Exception as e:
+            logger.error(f"Cannot run self‑test: {e}")
+            return False
+
     base_url = f"http://localhost:{os.getenv('PORT', '10000')}"
     db = SyncSessionLocal()
 
     try:
-        # Create temporary test user and API key
         test_email = f"self_test_{uuid.uuid4().hex[:8]}@chronos.local"
-        test_user = User(
-            id=uuid.uuid4(),
-            email=test_email,
-            hashed_password=bcrypt.hashpw(b"temp_pass", bcrypt.gensalt()).decode(),
-            full_name="Self Test",
-            status="approved",
-            role="user",
-            tenant="default"
-        )
+        test_user_kwargs = {
+            "id": uuid.uuid4(),
+            "email": test_email,
+            "full_name": "Self Test",
+            "status": "approved",
+            "role": "user",
+            "tenant": "default",
+            "created_at": datetime.now(timezone.utc)
+        }
+        test_user_kwargs[PASSWORD_COLUMN] = bcrypt.hashpw(b"temp_pass", bcrypt.gensalt()).decode()
+
+        test_user = User(**test_user_kwargs)
         db.add(test_user)
         db.commit()
 
@@ -182,7 +215,7 @@ async def run_self_test():
         db.close()
     except Exception as e:
         db.close()
-        logger.error(f"Self‑test DB setup failed (schema mismatch?): {e}")
+        logger.error(f"Self‑test DB setup failed: {e}")
         return False
 
     logger.info(f"Self‑test: created temporary user {test_email} with API key")
