@@ -164,6 +164,32 @@ def ensure_api_keys_table():
     finally:
         db.close()
 
+def ensure_tenant_configs_table():
+    db = SyncSessionLocal()
+    try:
+        db.execute(text("""
+            CREATE TABLE IF NOT EXISTS tenant_configs (
+                tenant VARCHAR(50) PRIMARY KEY,
+                performance_fee_percent FLOAT DEFAULT 0.20,
+                bloomberg_api_key_enc TEXT,
+                reuters_api_key_enc TEXT,
+                alpha_vantage_key_enc TEXT,
+                nibss_api_key_enc TEXT,
+                cbn_openapi_url VARCHAR(255),
+                ngx_api_url VARCHAR(255),
+                use_global_model BOOLEAN DEFAULT TRUE,
+                alpha_strategy_type VARCHAR(50),
+                updated_at TIMESTAMP
+            )
+        """))
+        db.commit()
+        logger.info("✅ tenant_configs table ready")
+    except Exception as e:
+        logger.error(f"Failed to create tenant_configs table: {e}")
+        db.rollback()
+    finally:
+        db.close()
+
 # ============================================================
 # ADMIN CREATION
 # ============================================================
@@ -422,6 +448,8 @@ async def run_http_concurrency_test():
 async def startup():
     # --- Ensure api_keys table exists ---
     ensure_api_keys_table()
+    # --- Ensure tenant_configs table exists ---
+    ensure_tenant_configs_table()
 
     # --- Detect actual schema ---
     detect_user_columns()
