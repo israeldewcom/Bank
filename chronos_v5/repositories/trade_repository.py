@@ -3,6 +3,7 @@ from chronos_v5.database import SyncSessionLocal, async_database, AsyncSessionLo
 from chronos_v5.models import Trade
 from sqlalchemy import select, desc
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.exc import IntegrityError  # <-- added
 import uuid
 from datetime import datetime, timezone
 from chronos_v5.logger_setup import logger
@@ -36,6 +37,13 @@ class TradeRepository:
             self.db.add(trade)
             self.db.commit()
             return trade.id
+        except IntegrityError as e:
+            self.db.rollback()
+            if "duplicate key" in str(e).lower() or "unique constraint" in str(e).lower():
+                logger.info(f"Duplicate idempotency key: {idempotency_key}")
+                raise ValueError("Duplicate idempotency key") from e
+            logger.error(f"Trade insert integrity error: {e}")
+            raise
         except Exception as e:
             self.db.rollback()
             logger.error(f"Trade insert failed: {e}")
@@ -97,6 +105,13 @@ class TradeRepositoryAsync:
                 session.add(trade)
                 await session.commit()
                 return trade.id
+            except IntegrityError as e:
+                await session.rollback()
+                if "duplicate key" in str(e).lower() or "unique constraint" in str(e).lower():
+                    logger.info(f"Duplicate idempotency key: {idempotency_key}")
+                    raise ValueError("Duplicate idempotency key") from e
+                logger.error(f"Async trade insert integrity error: {e}")
+                raise
             except Exception as e:
                 await session.rollback()
                 logger.error(f"Async trade insert failed: {e}")
