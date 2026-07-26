@@ -37,6 +37,7 @@ class Counterparty(Base):
     total_exposure = Column(Float, default=0.0)
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    tenant = Column(String(50), default="default", nullable=False, index=True)
 
 class FailHistory(Base):
     __tablename__ = "fail_history"
@@ -68,6 +69,7 @@ class CollateralHolding(Base):
     haircut = Column(Float, nullable=False)
     eligible = Column(Boolean, default=True)
     last_updated = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    tenant = Column(String(50), default="default", nullable=False, index=True)
 
 class MarketDataPoint(Base):
     __tablename__ = "market_data"
@@ -109,6 +111,7 @@ class RiskMetrics(Base):
     stress_loss = Column(Float)
     capital_usage = Column(Float)
     timestamp = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    tenant = Column(String(50), default="default", nullable=False, index=True)
 
 class User(Base):
     __tablename__ = "users"
