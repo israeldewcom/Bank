@@ -4,6 +4,8 @@ from sqlalchemy import create_engine
 from sqlalchemy.pool import QueuePool
 from chronos_v5.config import Config
 import asyncio
+import tempfile  # <-- ADDED
+import os
 
 # Sync engine (for legacy sync code)
 def create_sync_engine(db_url):
@@ -52,7 +54,9 @@ if Config.DB_READ_REPLICA_URL:
 def run_migrations():
     import os, time
     from chronos_v5.logger_setup import logger
-    lock_file = "/tmp/chronos_migration.lock"
+    # Use tempfile for lock file
+    lock_dir = tempfile.gettempdir()
+    lock_file = os.path.join(lock_dir, "chronos_migration.lock")
     if os.path.exists(lock_file):
         logger.info("Migration lock exists, waiting...")
         for _ in range(30):
