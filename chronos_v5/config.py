@@ -43,7 +43,7 @@ class Config:
     ENCRYPTION_KEY = os.getenv("ENCRYPTION_KEY", None)
 
     # ===== NEW AUTH SETTINGS =====
-    JWT_SECRET = os.getenv("JWT_SECRET", None)
+    JWT_SECRET = os.getenv("JWT_SECRET", None)  # will be derived from SECRET_KEY if not set
     JWT_EXPIRE_MINUTES = int(os.getenv("JWT_EXPIRE_MINUTES", "1440"))
     ADMIN_EMAILS = os.getenv("ADMIN_EMAILS", "admin@chronos.local").split(",")
     PASSWORD_MIN_LENGTH = int(os.getenv("PASSWORD_MIN_LENGTH", "12"))
@@ -208,8 +208,8 @@ class Config:
         elif len(cls.SECRET_KEY) < 32:
             errors.append("SECRET_KEY must be at least 32 characters long")
 
+        # Derive ENCRYPTION_KEY from SECRET_KEY if not set
         if not cls.ENCRYPTION_KEY:
-            # Attempt to derive from SECRET_KEY (for backward compatibility)
             if cls.SECRET_KEY:
                 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
                 from cryptography.hazmat.primitives import hashes
@@ -217,14 +217,20 @@ class Config:
                 kdf = PBKDF2HMAC(algorithm=hashes.SHA256(), length=32, salt=b'chronos_salt', iterations=100000)
                 key = base64.urlsafe_b64encode(kdf.derive(cls.SECRET_KEY.encode()))
                 cls.ENCRYPTION_KEY = key.decode()
-                # Not an error, but warning will be logged elsewhere
             else:
                 errors.append("ENCRYPTION_KEY is not set and cannot be derived (SECRET_KEY missing)")
 
+        # Derive JWT_SECRET from SECRET_KEY if not set
         if not cls.JWT_SECRET:
-            errors.append("JWT_SECRET is not set (must be at least 32 characters)")
-        elif len(cls.JWT_SECRET) < 32:
-            errors.append("JWT_SECRET must be at least 32 characters long")
+            if cls.SECRET_KEY:
+                # Use SECRET_KEY directly as JWT_SECRET (ensure it's at least 32 chars, already enforced)
+                cls.JWT_SECRET = cls.SECRET_KEY
+            else:
+                errors.append("JWT_SECRET is not set and cannot be derived (SECRET_KEY missing)")
+
+        # Validate JWT_SECRET length (should be at least 32)
+        if cls.JWT_SECRET and len(cls.JWT_SECRET) < 32:
+            errors.append("JWT_SECRET must be at least 32 characters long (derived from SECRET_KEY or set explicitly)")
 
         if not cls.API_KEY:
             errors.append("CHRONOS_API_KEY is not set")
@@ -244,10 +250,10 @@ class Config:
         if errors:
             raise RuntimeError("Configuration validation failed:\n - " + "\n - ".join(errors))
 
-        # Set default encryption key if derived
-        if cls.ENCRYPTION_KEY is None and cls.SECRET_KEY:
-            # already derived above
-            pass
+        # Warn if JWT_SECRET is derived (not explicitly set)
+        if cls.JWT_SECRET == cls.SECRET_KEY and cls.SECRET_KEY:
+            import warnings
+            warnings.warn("JWT_SECRET was not set explicitly; using SECRET_KEY as JWT_SECRET. For production, set JWT_SECRET separately.")
 
 # Auto‑validate on import
 Config.validate()
