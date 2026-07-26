@@ -64,7 +64,7 @@ async def ingest_trade_async(
     if not Config.ASYNC_DB or async_database is None:
         raise HTTPException(status_code=501, detail="Async DB not enabled")
     repo = TradeRepositoryAsync()
-    existing = await repo.get_by_idempotency(trade.idempotency_key)
+    existing = await repo.get_by_idempotency(trade.idempotency_key, tenant=tenant)
     if existing:
         return {"status": "DUPLICATE", "trade": existing}
     trade_dict = trade.dict()
@@ -73,7 +73,7 @@ async def ingest_trade_async(
         trade_id = await repo.insert(trade_dict, trade.idempotency_key)
     except ValueError as e:
         if "Duplicate idempotency key" in str(e):
-            existing = await repo.get_by_idempotency(trade.idempotency_key)
+            existing = await repo.get_by_idempotency(trade.idempotency_key, tenant=tenant)
             if existing:
                 return {"status": "DUPLICATE", "trade": existing}
             raise HTTPException(status_code=500, detail="Duplicate handling error")
@@ -102,7 +102,7 @@ def ingest_trade_sync(
     from chronos_v5.repositories.trade_repository import TradeRepository
     tenant = get_tenant_from_request(request)
     repo = TradeRepository()
-    existing = repo.get_by_idempotency(trade.idempotency_key)
+    existing = repo.get_by_idempotency(trade.idempotency_key, tenant=tenant)
     if existing:
         return {"status": "DUPLICATE", "trade": existing}
     trade_dict = trade.dict()
@@ -111,7 +111,7 @@ def ingest_trade_sync(
         trade_id = repo.insert(trade_dict, trade.idempotency_key)
     except ValueError as e:
         if "Duplicate idempotency key" in str(e):
-            existing = repo.get_by_idempotency(trade.idempotency_key)
+            existing = repo.get_by_idempotency(trade.idempotency_key, tenant=tenant)
             if existing:
                 return {"status": "DUPLICATE", "trade": existing}
             raise HTTPException(status_code=500, detail="Duplicate handling error")
@@ -132,7 +132,7 @@ def ingest_trade_sync(
 @router.get("/{trade_id}")
 async def get_trade(trade_id: str, current_user: User = Depends(get_current_user)):
     repo = TradeRepositoryAsync()
-    trade = await repo.get(trade_id)
+    trade = await repo.get(trade_id, tenant=current_user.tenant)
     if not trade:
         raise HTTPException(status_code=404, detail="Trade not found")
     return trade
@@ -140,4 +140,4 @@ async def get_trade(trade_id: str, current_user: User = Depends(get_current_user
 @router.get("/")
 async def list_trades(limit: int = 50, offset: int = 0, current_user: User = Depends(get_current_user)):
     repo = TradeRepositoryAsync()
-    return await repo.get_all(limit=limit, offset=offset)
+    return await repo.get_all(limit=limit, offset=offset, tenant=current_user.tenant)
