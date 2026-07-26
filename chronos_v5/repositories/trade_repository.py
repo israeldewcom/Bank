@@ -41,27 +41,36 @@ class TradeRepository:
             logger.error(f"Trade insert failed: {e}")
             raise
 
-    def get(self, trade_id: str):
+    def get(self, trade_id: str, tenant: str = None):
         try:
-            return self.db.query(Trade).filter(Trade.id == trade_id).first()
+            q = self.db.query(Trade).filter(Trade.id == trade_id)
+            if tenant is not None:
+                q = q.filter(Trade.tenant == tenant)
+            return q.first()
         except Exception as e:
             self.db.rollback()
             logger.error(f"Trade get failed: {e}")
             raise
 
-    def get_by_idempotency(self, key: str):
+    def get_by_idempotency(self, key: str, tenant: str = None):
         if not key:
             return None
         try:
-            return self.db.query(Trade).filter(Trade.idempotency_key == key).first()
+            q = self.db.query(Trade).filter(Trade.idempotency_key == key)
+            if tenant is not None:
+                q = q.filter(Trade.tenant == tenant)
+            return q.first()
         except Exception as e:
             self.db.rollback()
             logger.error(f"get_by_idempotency failed: {e}")
             raise
 
-    def get_all(self, limit=50, offset=0):
+    def get_all(self, limit=50, offset=0, tenant: str = None):
         try:
-            return self.db.query(Trade).order_by(desc(Trade.created_at)).limit(limit).offset(offset).all()
+            q = self.db.query(Trade)
+            if tenant is not None:
+                q = q.filter(Trade.tenant == tenant)
+            return q.order_by(desc(Trade.created_at)).limit(limit).offset(offset).all()
         except Exception as e:
             self.db.rollback()
             logger.error(f"get_all failed: {e}")
@@ -93,32 +102,42 @@ class TradeRepositoryAsync:
                 logger.error(f"Async trade insert failed: {e}")
                 raise
 
-    async def get(self, trade_id: str):
+    async def get(self, trade_id: str, tenant: str = None):
         async with AsyncSessionLocal() as session:
             try:
-                result = await session.execute(select(Trade).where(Trade.id == trade_id))
+                stmt = select(Trade).where(Trade.id == trade_id)
+                if tenant is not None:
+                    stmt = stmt.where(Trade.tenant == tenant)
+                result = await session.execute(stmt)
                 return result.scalar_one_or_none()
             except Exception as e:
                 await session.rollback()
                 logger.error(f"Async trade get failed: {e}")
                 raise
 
-    async def get_by_idempotency(self, key: str):
+    async def get_by_idempotency(self, key: str, tenant: str = None):
         if not key:
             return None
         async with AsyncSessionLocal() as session:
             try:
-                result = await session.execute(select(Trade).where(Trade.idempotency_key == key))
+                stmt = select(Trade).where(Trade.idempotency_key == key)
+                if tenant is not None:
+                    stmt = stmt.where(Trade.tenant == tenant)
+                result = await session.execute(stmt)
                 return result.scalar_one_or_none()
             except Exception as e:
                 await session.rollback()
                 logger.error(f"Async get_by_idempotency failed: {e}")
                 raise
 
-    async def get_all(self, limit=50, offset=0):
+    async def get_all(self, limit=50, offset=0, tenant: str = None):
         async with AsyncSessionLocal() as session:
             try:
-                result = await session.execute(select(Trade).order_by(desc(Trade.created_at)).limit(limit).offset(offset))
+                stmt = select(Trade)
+                if tenant is not None:
+                    stmt = stmt.where(Trade.tenant == tenant)
+                stmt = stmt.order_by(desc(Trade.created_at)).limit(limit).offset(offset)
+                result = await session.execute(stmt)
                 return result.scalars().all()
             except Exception as e:
                 await session.rollback()
