@@ -5,6 +5,7 @@ from chronos_v5.database import SyncSessionLocal
 from chronos_v5.models import RiskMetrics, Trade, MarketDataPoint
 from chronos_v5.logger_setup import logger
 from datetime import datetime, timedelta
+from collections import defaultdict
 
 class RiskEngine:
     def __init__(self):
@@ -37,31 +38,52 @@ class RiskEngine:
             logger.info("No trades for risk computation")
             return None
 
+        # Bulk fetch market data for all instrument types in the date range
+        instrument_types = list(set(t.instrument_type for t in trades if t.instrument_type))
+        if not instrument_types:
+            logger.warning("No instrument types found, cannot compute risk")
+            return None
+
+        cutoff = datetime.now() - timedelta(days=31)  # include a bit more
+        market_data = self.db.query(MarketDataPoint).filter(
+            MarketDataPoint.symbol.in_(instrument_types),
+            MarketDataPoint.timestamp >= cutoff
+        ).order_by(MarketDataPoint.timestamp).all()
+
+        # Build a dict: symbol -> list of (timestamp, price) sorted
+        price_series = defaultdict(list)
+        for dp in market_data:
+            price_series[dp.symbol].append((dp.timestamp, dp.price))
+
         pnl_changes = []
         estimated_count = 0
         total_notional = 0.0
 
         for t in trades:
-            market_data = self.db.query(MarketDataPoint).filter(
-                MarketDataPoint.symbol == t.instrument_type,
-                MarketDataPoint.timestamp >= t.created_at - timedelta(days=1),
-                MarketDataPoint.timestamp <= t.created_at + timedelta(days=1)
-            ).order_by(MarketDataPoint.timestamp).all()
-
-            if len(market_data) >= 2:
-                start_price = market_data[0].price
-                end_price = market_data[-1].price
-                change = (end_price - start_price) / start_price if start_price != 0 else 0
+            if not t.instrument_type or t.instrument_type not in price_series:
+                estimated_count += 1
+                continue
+            series = price_series[t.instrument_type]
+            # Find prices around the trade creation time
+            trade_time = t.created_at
+            before = None
+            after = None
+            for ts, price in series:
+                if ts <= trade_time:
+                    before = (ts, price)
+                else:
+                    after = (ts, price)
+                    break
+            # Need both before and after to compute change
+            if before and after:
+                change = (after[1] - before[1]) / before[1] if before[1] != 0 else 0
                 pnl_changes.append(t.notional * change)
                 total_notional += t.notional
             else:
-                # Exclude trade from risk calculation – log and count
                 estimated_count += 1
-                logger.debug(f"Trade {t.id} excluded from VaR – no market data for {t.instrument_type}")
 
         if not pnl_changes:
             logger.warning("No trades with market data; risk metrics cannot be computed.")
-            # Return a metrics row indicating data quality issue
             return {
                 "desk": desk or "TOTAL",
                 "tenant": tenant or "default",
@@ -93,8 +115,6 @@ class RiskEngine:
         self.db.commit()
         logger.info(f"Risk metrics computed for {desk or 'TOTAL'} (excluded {estimated_count} trades with no market data)")
 
-        # Attach data quality info to the returned object if needed
-        # We'll return a dict with metrics plus quality flag
         result = {
             "desk": metric.desk,
             "tenant": metric.tenant,
