@@ -26,10 +26,12 @@ class RiskEngine:
         shock = shocks.get(scenario, -0.2)
         return np.mean(returns) * (1 + shock)
 
-    def compute_all(self, desk=None):
+    def compute_all(self, desk=None, tenant=None):
         query = self.db.query(Trade).filter(Trade.created_at > datetime.now() - timedelta(days=30))
         if desk:
             query = query.filter(Trade.desk == desk)
+        if tenant:
+            query = query.filter(Trade.tenant == tenant)
         trades = query.all()
         if not trades:
             logger.info("No trades for risk computation")
@@ -62,6 +64,7 @@ class RiskEngine:
             # Return a metrics row indicating data quality issue
             return {
                 "desk": desk or "TOTAL",
+                "tenant": tenant or "default",
                 "var_99": None,
                 "expected_shortfall": None,
                 "stress_loss": None,
@@ -80,6 +83,7 @@ class RiskEngine:
 
         metric = RiskMetrics(
             desk=desk or "TOTAL",
+            tenant=tenant or "default",
             var_99=var,
             expected_shortfall=es,
             stress_loss=stress,
@@ -93,6 +97,7 @@ class RiskEngine:
         # We'll return a dict with metrics plus quality flag
         result = {
             "desk": metric.desk,
+            "tenant": metric.tenant,
             "var_99": metric.var_99,
             "expected_shortfall": metric.expected_shortfall,
             "stress_loss": metric.stress_loss,
