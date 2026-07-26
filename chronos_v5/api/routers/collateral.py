@@ -2,8 +2,9 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi_limiter.depends import RateLimiter
 from pydantic import BaseModel
 from chronos_v5.repositories.collateral_repository import CollateralRepository
-from chronos_v5.api.dependencies import get_api_key
+from chronos_v5.api.dependencies import get_current_user
 from chronos_v5.haircut_engine import HaircutEngine
+from chronos_v5.models import User
 
 router = APIRouter()
 repo = CollateralRepository()
@@ -15,8 +16,8 @@ class CollateralUpdate(BaseModel):
     quantity: float
     market_value: float
 
-@router.post("/add", dependencies=[Depends(get_api_key), Depends(RateLimiter(times=100, seconds=60))])
-def add_collateral(collateral: CollateralUpdate):
+@router.post("/add", dependencies=[Depends(RateLimiter(times=100, seconds=60))])
+def add_collateral(collateral: CollateralUpdate, current_user: User = Depends(get_current_user)):
     from chronos_v5.models import CollateralHolding
     haircut = haircut_engine.compute_haircut(collateral.asset_type)
     holding = CollateralHolding(
@@ -24,7 +25,8 @@ def add_collateral(collateral: CollateralUpdate):
         asset_type=collateral.asset_type,
         quantity=collateral.quantity,
         market_value=collateral.market_value,
-        haircut=haircut
+        haircut=haircut,
+        tenant=current_user.tenant
     )
     db = repo.db
     db.add(holding)
@@ -32,6 +34,6 @@ def add_collateral(collateral: CollateralUpdate):
     return {"status": "added", "id": holding.id}
 
 @router.get("/{counterparty_id}")
-def get_collateral(counterparty_id: str):
-    holdings = repo.get_by_counterparty(counterparty_id)
+def get_collateral(counterparty_id: str, current_user: User = Depends(get_current_user)):
+    holdings = repo.get_by_counterparty(counterparty_id, tenant=current_user.tenant)
     return holdings
