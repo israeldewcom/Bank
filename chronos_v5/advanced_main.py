@@ -27,19 +27,38 @@ def start_advanced_services():
     # Use Redis lock to ensure only one instance runs these
     r = redis.from_url(Config.REDIS_URL)
     lock_key = "advanced:services:lock"
+    # Try to acquire lock with expiry
     lock = r.setnx(lock_key, "1")
     if not lock:
         logger.info("Advanced services already running on another instance")
         return
-    r.expire(lock_key, 60)  # lock expires after 60s if crash
+    # Set expiry, but we will renew it
+    r.expire(lock_key, 30)  # short expiry, renewed every 20s
+
+    # Start a background thread to renew the lock
+    def renew_lock():
+        while True:
+            time.sleep(20)
+            try:
+                r.expire(lock_key, 30)
+                logger.debug("Advanced services lock renewed")
+            except Exception as e:
+                logger.error(f"Failed to renew advanced lock: {e}")
+                break
+
+    lock_renewer = threading.Thread(target=renew_lock, daemon=True)
+    lock_renewer.start()
+
     # Start CBN listener
     cbn_listener.start()
+
     # Start Shadow VaR loop
     def shadow_var_loop():
         var = ShadowVaR()
         var.run_continuous()
     t = threading.Thread(target=shadow_var_loop, daemon=True)
     t.start()
+
     # Start calibrator loop
     def calibrator_loop():
         calibrator = DynamicCalibrator()
@@ -48,14 +67,17 @@ def start_advanced_services():
             calibrator.calibrate()
     t2 = threading.Thread(target=calibrator_loop, daemon=True)
     t2.start()
+
     if AdvancedConfig.BACKFILL_TRAINING_ENABLED:
         trainer = BackfillTrainer()
         trainer.train()
+
     try:
         optimizer = AdvancedProfitOptimizer()
         optimizer.run()
     except Exception as e:
         logger.error(f"Initial advanced optimization failed: {e}")
+
     logger.info("Advanced services started")
 
 def start_migration():
