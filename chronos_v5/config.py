@@ -1,4 +1,4 @@
- # chronos_v5/config.py
+# chronos_v5/config.py
 import os
 import base64
 import secrets
@@ -27,7 +27,6 @@ class Config:
     REDIS_SENTINEL_MASTER = os.getenv("REDIS_SENTINEL_MASTER", "mymaster")
 
     # ===== CELERY =====
-    # Automatically use the same Redis host as REDIS_URL, with different DB indexes
     _base_redis = REDIS_URL.rstrip('/')
     CELERY_BROKER_URL = os.getenv("CELERY_BROKER_URL", f"{_base_redis}/1")
     CELERY_RESULT_BACKEND = os.getenv("CELERY_RESULT_BACKEND", f"{_base_redis}/2")
@@ -196,8 +195,59 @@ class Config:
 
     @classmethod
     def validate(cls):
-        # ... keep your existing validation logic ...
-        pass
+        """Validate all required configuration variables."""
+        errors = []
+
+        # Core DB
+        if not cls.DATABASE_URL:
+            errors.append("DATABASE_URL is not set")
+
+        # Security keys
+        if not cls.SECRET_KEY:
+            errors.append("SECRET_KEY is not set (must be at least 32 characters)")
+        elif len(cls.SECRET_KEY) < 32:
+            errors.append("SECRET_KEY must be at least 32 characters long")
+
+        if not cls.ENCRYPTION_KEY:
+            # Attempt to derive from SECRET_KEY (for backward compatibility)
+            if cls.SECRET_KEY:
+                from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+                from cryptography.hazmat.primitives import hashes
+                import base64
+                kdf = PBKDF2HMAC(algorithm=hashes.SHA256(), length=32, salt=b'chronos_salt', iterations=100000)
+                key = base64.urlsafe_b64encode(kdf.derive(cls.SECRET_KEY.encode()))
+                cls.ENCRYPTION_KEY = key.decode()
+                # Not an error, but warning will be logged elsewhere
+            else:
+                errors.append("ENCRYPTION_KEY is not set and cannot be derived (SECRET_KEY missing)")
+
+        if not cls.JWT_SECRET:
+            errors.append("JWT_SECRET is not set (must be at least 32 characters)")
+        elif len(cls.JWT_SECRET) < 32:
+            errors.append("JWT_SECRET must be at least 32 characters long")
+
+        if not cls.API_KEY:
+            errors.append("CHRONOS_API_KEY is not set")
+
+        # Redis
+        if not cls.REDIS_URL:
+            errors.append("REDIS_URL is not set")
+
+        # Environment
+        if cls.ENV not in ("development", "staging", "production", "test"):
+            errors.append(f"CHRONOS_ENV must be one of: development, staging, production, test (got {cls.ENV})")
+
+        # NIBSS (required for production)
+        if cls.ENV == "production" and not cls.NIBSS_API_KEY:
+            errors.append("NIBSS_API_KEY is required in production")
+
+        if errors:
+            raise RuntimeError("Configuration validation failed:\n - " + "\n - ".join(errors))
+
+        # Set default encryption key if derived
+        if cls.ENCRYPTION_KEY is None and cls.SECRET_KEY:
+            # already derived above
+            pass
 
 # Auto‑validate on import
 Config.validate()
