@@ -14,6 +14,8 @@ class ShadowVaR:
         self.db = SyncSessionLocal()
         self.redis = redis.from_url(Config.REDIS_URL)
         self.last_update = None
+        # Set a fixed seed for reproducibility
+        np.random.seed(42)
 
     def compute_shadow_var(self, desk=None):
         cutoff = datetime.now() - timedelta(days=AdvancedConfig.SHADOW_VAR_LOOKBACK_DAYS)
