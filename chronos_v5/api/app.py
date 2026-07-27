@@ -254,8 +254,10 @@ def ensure_admin_exists():
             }
         )
         db.commit()
-        logger.info(f"🔑 Admin API key: {raw_key}")
-        logger.info("📋 Copy this key now – it will not be shown again.")
+        # SECURITY FIX: Removed plaintext key logging. Key is only stored in DB.
+        # The raw key is returned in the response of the /admin/users/approve endpoint.
+        # Admins must capture it there.
+        logger.info("🔑 Admin API key generated securely (not logged).")
     except Exception as e:
         logger.error(f"Failed to create admin: {e}")
         db.rollback()
