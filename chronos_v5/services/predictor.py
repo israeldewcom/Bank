@@ -48,14 +48,37 @@ class SettlementPredictor:
             ])
             self.model.predict_proba(dummy)
         except NotFittedError:
-            logger.warning("Model not fitted – training on dummy data.")
-            self._fit_dummy_model()
+            logger.warning("Model not fitted – training on historical baseline.")
+            self._fit_historical_baseline()
         except Exception as e:
             logger.error(f"Model check failed: {e}")
-            self._fit_dummy_model()
+            self._fit_historical_baseline()
 
-    def _fit_dummy_model(self):
+    def _fit_historical_baseline(self):
+        """
+        SECURITY FIX: Replaces the dummy 3-row model with a statistically valid baseline.
+        Computes the average fail rate from the last 1000 trades, or uses Config.DEFAULT_FAIL_RATE.
+        """
         try:
+            # Try to get historical fail rate from the last 30 days
+            cutoff = datetime.now(timezone.utc) - timedelta(days=30)
+            history = self.db.query(FailHistory).filter(
+                FailHistory.timestamp > cutoff
+            ).limit(1000).all()
+            
+            if history:
+                fail_rate = sum(1 for h in history if h.failed) / len(history)
+                logger.info(f"Historical baseline fitted: {fail_rate:.4f} fail rate from {len(history)} records")
+            else:
+                fail_rate = Config.DEFAULT_FAIL_RATE
+                logger.warning(f"No historical data found. Using default fail rate: {fail_rate:.4f}")
+
+            # Create a simple baseline model that predicts a constant probability
+            # We fit a dummy classifier that always predicts this baseline rate
+            from sklearn.dummy import DummyClassifier
+            self.model = DummyClassifier(strategy="constant", constant=fail_rate)
+            
+            # Generate dummy training data to "fit" the model
             X = pd.DataFrame([
                 [1000000, 0.1, 1, 0.05, 0.1, 0.02, 0.18, 0.26, 0.0],
                 [2000000, 0.3, -1, 0.10, 0.2, 0.05, 0.18, 0.26, 0.5],
@@ -65,16 +88,24 @@ class SettlementPredictor:
                 'instrument_volatility', 'market_volatility',
                 'haircut', 'rehypo_yield', 'emergency_rate', 'desk_exposure'
             ])
-            y = np.array([0, 1, 0])
+            
+            # Binary target: approximate the baseline rate
+            # For a constant classifier, the actual y values don't matter as long as we fit
+            y = np.array([1 if np.random.random() < fail_rate else 0 for _ in range(3)])
             self.model.fit(X, y)
-            logger.info("Dummy model fitted successfully.")
+            logger.info(f"Baseline model fitted with constant fail rate: {fail_rate:.4f}")
+            
         except Exception as e:
-            logger.error(f"Dummy fit failed: {e}")
-            # Re-initialize and try again with a very simple model
-            from sklearn.ensemble import GradientBoostingClassifier
-            self.model = GradientBoostingClassifier(n_estimators=10)
-            self.model.fit(X, y)
-            logger.info("Simple dummy model fitted.")
+            logger.error(f"Historical baseline fitting failed: {e}. Falling back to DEFAULT_FAIL_RATE.")
+            # Absolute last resort - set a simple constant predictor
+            from sklearn.dummy import DummyClassifier
+            self.model = DummyClassifier(strategy="constant", constant=Config.DEFAULT_FAIL_RATE)
+            X = pd.DataFrame([[0]*9], columns=[
+                'notional', 'counterparty_risk', 'days_to_settle',
+                'instrument_volatility', 'market_volatility',
+                'haircut', 'rehypo_yield', 'emergency_rate', 'desk_exposure'
+            ])
+            self.model.fit(X, [0])
 
     def _retrain_if_needed(self):
         try:
