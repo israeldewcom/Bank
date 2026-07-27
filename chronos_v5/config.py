@@ -220,13 +220,24 @@ class Config:
             else:
                 errors.append("ENCRYPTION_KEY is not set and cannot be derived (SECRET_KEY missing)")
 
-        # Derive JWT_SECRET from SECRET_KEY if not set
+        # SECURITY FIX: Enforce explicit JWT_SECRET in production
         if not cls.JWT_SECRET:
             if cls.SECRET_KEY:
-                # Use SECRET_KEY directly as JWT_SECRET (ensure it's at least 32 chars, already enforced)
+                # Derive for development convenience, but warn
                 cls.JWT_SECRET = cls.SECRET_KEY
+                import warnings
+                warnings.warn("JWT_SECRET was not set explicitly; using SECRET_KEY as JWT_SECRET. "
+                              "For production, set JWT_SECRET separately.")
             else:
                 errors.append("JWT_SECRET is not set and cannot be derived (SECRET_KEY missing)")
+
+        # In production, we MUST have a separate JWT_SECRET
+        if cls.ENV == "production":
+            if cls.JWT_SECRET == cls.SECRET_KEY:
+                errors.append("In production, JWT_SECRET must be explicitly set and different from SECRET_KEY. "
+                              "Please set JWT_SECRET in your .env file.")
+            elif not cls.JWT_SECRET or len(cls.JWT_SECRET) < 32:
+                errors.append("JWT_SECRET must be at least 32 characters long in production.")
 
         # Validate JWT_SECRET length (should be at least 32)
         if cls.JWT_SECRET and len(cls.JWT_SECRET) < 32:
@@ -249,11 +260,6 @@ class Config:
 
         if errors:
             raise RuntimeError("Configuration validation failed:\n - " + "\n - ".join(errors))
-
-        # Warn if JWT_SECRET is derived (not explicitly set)
-        if cls.JWT_SECRET == cls.SECRET_KEY and cls.SECRET_KEY:
-            import warnings
-            warnings.warn("JWT_SECRET was not set explicitly; using SECRET_KEY as JWT_SECRET. For production, set JWT_SECRET separately.")
 
 # Auto‑validate on import
 Config.validate()
