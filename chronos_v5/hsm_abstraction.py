@@ -13,6 +13,8 @@ class HSMAbstraction:
         self.enabled = Config.HSM_ENABLED
         self._session = None
         self._key_handle = None
+        
+        # SECURITY FIX: Disable insecure fallback in production
         if self.enabled:
             try:
                 from pykcs11 import PyKCS11, Session, CKF_SERIAL_SESSION, Mechanism
@@ -26,6 +28,12 @@ class HSMAbstraction:
                 logger.error(f"HSM initialization failed: {e}")
                 raise
         else:
+            if Config.ENV == "production":
+                raise RuntimeError(
+                    "HSM is disabled in production. This is a security risk. "
+                    "Either enable HSM (HSM_ENABLED=true) or use a secure software fallback volume."
+                )
+            
             # Ensure encryption key is available (Config.validate() should have set it)
             if Config.ENCRYPTION_KEY is None:
                 # Fallback: derive a deterministic key from SECRET_KEY (similar to validate)
@@ -38,7 +46,8 @@ class HSMAbstraction:
                 logger.warning("ENCRYPTION_KEY was None; derived from SECRET_KEY as fallback.")
             self._fernet_key = Config.ENCRYPTION_KEY.encode()
             self._fernet_cipher = Fernet(self._fernet_key)
-            # Deterministic RSA key fallback
+            # SECURITY FIX: Configurable fallback key path
+            self._fallback_key_path = os.getenv("HSM_FALLBACK_PATH", "/secure/chronos/fallback_rsa.pem")
             self._private_key = self._derive_rsa_key(Config.SECRET_KEY.encode())
             self._public_key = self._private_key.public_key()
 
@@ -46,22 +55,42 @@ class HSMAbstraction:
         from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
         from cryptography.hazmat.primitives.kdf.hkdf import HKDF
         import hashlib
-        # Use a persistent file for the key
-        key_path = "/tmp/chronos_fallback_rsa.pem"
-        if os.path.exists(key_path):
-            with open(key_path, "rb") as f:
-                return serialization.load_pem_private_key(f.read(), password=None)
-        else:
-            private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-            pem = private_key.private_bytes(
-                encoding=serialization.Encoding.PEM,
-                format=serialization.PrivateFormat.PKCS8,
-                encryption_algorithm=serialization.NoEncryption()
-            )
-            with open(key_path, "wb") as f:
+        
+        # Ensure the directory exists
+        key_dir = os.path.dirname(self._fallback_key_path)
+        if key_dir and not os.path.exists(key_dir):
+            try:
+                os.makedirs(key_dir, mode=0o700, exist_ok=True)
+                logger.info(f"Created secure directory for fallback key: {key_dir}")
+            except Exception as e:
+                logger.error(f"Failed to create secure directory {key_dir}: {e}")
+                # Fallback to a temp dir as last resort, but log a critical warning
+                import tempfile
+                self._fallback_key_path = os.path.join(tempfile.gettempdir(), "chronos_fallback_rsa.pem")
+                logger.critical(f"Using insecure fallback path: {self._fallback_key_path}. Set HSM_FALLBACK_PATH to a secure volume.")
+
+        if os.path.exists(self._fallback_key_path):
+            try:
+                with open(self._fallback_key_path, "rb") as f:
+                    return serialization.load_pem_private_key(f.read(), password=None)
+            except Exception as e:
+                logger.warning(f"Failed to load fallback key from {self._fallback_key_path}: {e}. Regenerating.")
+                # Fall through to generate new key
+
+        private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        pem = private_key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption()
+        )
+        try:
+            with open(self._fallback_key_path, "wb") as f:
                 f.write(pem)
-            os.chmod(key_path, 0o600)
-            return private_key
+            os.chmod(self._fallback_key_path, 0o600)
+            logger.info(f"Generated new fallback RSA key at {self._fallback_key_path}")
+        except Exception as e:
+            logger.error(f"Failed to write fallback key to {self._fallback_key_path}: {e}")
+        return private_key
 
     def encrypt(self, plaintext: bytes) -> bytes:
         if not self.enabled:
