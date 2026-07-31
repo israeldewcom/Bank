@@ -1,8 +1,14 @@
+# chronos_v5/api/routers/system_health.py
+# SECURITY FIX: both endpoints previously had no auth dependency at all,
+# exposing DB/Redis/Celery status, disk free space, platform info, and
+# environment to anyone unauthenticated. Both now require get_current_user.
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse
 from chronos_v5.database import SyncSessionLocal
 from chronos_v5.config import Config
 from chronos_v5.logger_setup import logger
+from chronos_v5.api.dependencies import get_current_user
+from chronos_v5.models import User
 from sqlalchemy import text
 import redis
 import os
@@ -41,13 +47,13 @@ def get_celery_status():
         return f"ERROR: {e}"
 
 @router.get("/health/detailed")
-def detailed_health(request: Request):
+def detailed_health(request: Request, current_user: User = Depends(get_current_user)):
     return {
         "timestamp": datetime.utcnow().isoformat(),
         "service": "Chronos",
         "version": Config.__version__,
         "environment": Config.ENV,
-        "tenant": request.headers.get(Config.TENANT_HEADER, Config.DEFAULT_TENANT),
+        "tenant": current_user.tenant,
         "components": {
             "database": get_db_status(),
             "redis": get_redis_status(),
@@ -58,7 +64,7 @@ def detailed_health(request: Request):
     }
 
 @router.get("/health/dashboard", response_class=HTMLResponse)
-def health_dashboard():
+def health_dashboard(current_user: User = Depends(get_current_user)):
     html = """
     <!DOCTYPE html>
     <html>
@@ -91,7 +97,7 @@ def health_dashboard():
         </div>
         <script>
             async function fetchHealth() {
-                const res = await fetch('/system/health/detailed');
+                const res = await fetch('/system/health/detailed', { credentials: 'include' });
                 const data = await res.json();
                 document.getElementById('tenant').textContent = data.tenant || 'N/A';
                 document.getElementById('env').textContent = data.environment || 'N/A';
