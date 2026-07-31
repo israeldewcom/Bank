@@ -7,9 +7,12 @@ class DeskExposureRepository:
     def __init__(self):
         self.db = SyncSessionLocal()
 
-    def get_desk_exposure(self, desk):
+    def get_desk_exposure(self, desk, tenant: str = None):
         try:
-            trades = self.db.query(Trade).filter(Trade.desk == desk, Trade.status != "SETTLED").all()
+            q = self.db.query(Trade).filter(Trade.desk == desk, Trade.status != "SETTLED")
+            if tenant:
+                q = q.filter(Trade.tenant == tenant)
+            trades = q.all()
             total = sum(t.notional for t in trades)
             return total
         except Exception as e:
