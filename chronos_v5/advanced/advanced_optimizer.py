@@ -10,7 +10,10 @@ from chronos_v5.advanced.market_impact import MarketImpactEstimator
 from datetime import datetime, timedelta
 
 class AdvancedProfitOptimizer:
-    def __init__(self):
+    def __init__(self, tenant: str):
+        if not tenant:
+            raise ValueError("AdvancedProfitOptimizer requires a tenant")
+        self.tenant = tenant
         self.db = SyncSessionLocal()
         self.alpha_signals = {}
         self.counterparty_limits = {}
@@ -18,13 +21,17 @@ class AdvancedProfitOptimizer:
         self.impact_estimator = MarketImpactEstimator() if AdvancedConfig.MARKET_IMPACT_ENABLED else None
 
     def load_data(self):
+        # Alpha signals are treated as a global market feed, not tenant data,
+        # since they are derived from market-wide observations rather than
+        # any single tenant's positions.
         signals = self.db.query(AlphaSignal).filter(
             AlphaSignal.generated_at > datetime.now() - timedelta(minutes=10)
         ).all()
         for s in signals:
             self.alpha_signals[s.asset] = s.signal_value
         self.holdings = self.db.query(CollateralHolding).filter(
-            CollateralHolding.eligible == True
+            CollateralHolding.eligible == True,
+            CollateralHolding.tenant == self.tenant,
         ).all()
         self.counterparty_limits = {h.counterparty_id: 1e9 for h in self.holdings}
 
