@@ -9,6 +9,7 @@ import uuid
 
 Base = declarative_base()
 
+
 class Trade(Base):
     __tablename__ = "trades"
     id = Column(String(36), primary_key=True)
@@ -28,6 +29,7 @@ class Trade(Base):
     nibss_ref = Column(String(100), nullable=True)
     settled_at = Column(DateTime, nullable=True)
 
+
 class Counterparty(Base):
     __tablename__ = "counterparties"
     id = Column(String(100), primary_key=True)
@@ -39,6 +41,7 @@ class Counterparty(Base):
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     tenant = Column(String(50), default="default", nullable=False, index=True)
 
+
 class FailHistory(Base):
     __tablename__ = "fail_history"
     id = Column(BigInteger, primary_key=True, autoincrement=True)
@@ -47,6 +50,7 @@ class FailHistory(Base):
     failure_reason = Column(Text, nullable=True)
     timestamp = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     notional = Column(Float)
+
 
 class PnLAttribution(Base):
     __tablename__ = "pnl_attribution"
@@ -58,6 +62,7 @@ class PnLAttribution(Base):
     timestamp = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     metadata_json = Column(Text, nullable=True)
     tenant = Column(String(50), default="default", nullable=False, index=True)
+
 
 class CollateralHolding(Base):
     __tablename__ = "collateral_holdings"
@@ -71,6 +76,7 @@ class CollateralHolding(Base):
     last_updated = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     tenant = Column(String(50), default="default", nullable=False, index=True)
 
+
 class MarketDataPoint(Base):
     __tablename__ = "market_data"
     id = Column(BigInteger, primary_key=True)
@@ -79,6 +85,7 @@ class MarketDataPoint(Base):
     volume = Column(Float)
     timestamp = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
     source = Column(String(50))
+
 
 class AlphaSignal(Base):
     __tablename__ = "alpha_signals"
@@ -89,18 +96,23 @@ class AlphaSignal(Base):
     generated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     expiry = Column(DateTime)
 
+
 class ExecutionOrder(Base):
     __tablename__ = "execution_orders"
     id = Column(BigInteger, primary_key=True)
     trade_id = Column(String(36), nullable=False, index=True)
+    tenant = Column(String(100), nullable=False, index=True)
+    client_order_id = Column(String(64), nullable=False, unique=True, index=True)
     order_type = Column(String(20))
     side = Column(String(10))
     quantity = Column(Float)
     price = Column(Float)
     status = Column(String(20))
+    gateway_response = Column(JSON)
     sent_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     filled_at = Column(DateTime)
     external_order_id = Column(String(100))
+
 
 class RiskMetrics(Base):
     __tablename__ = "risk_metrics"
@@ -112,6 +124,7 @@ class RiskMetrics(Base):
     capital_usage = Column(Float)
     timestamp = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     tenant = Column(String(50), default="default", nullable=False, index=True)
+
 
 class User(Base):
     __tablename__ = "users"
@@ -126,6 +139,7 @@ class User(Base):
     tenant = Column(String(50), default="default", nullable=False, index=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
+
 class APIKey(Base):
     __tablename__ = "api_keys"
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
@@ -136,6 +150,7 @@ class APIKey(Base):
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     revoked_at = Column(DateTime, nullable=True)
     last_used_at = Column(DateTime, nullable=True)
+
 
 class Device(Base):
     __tablename__ = "devices"
@@ -150,6 +165,7 @@ class Device(Base):
     approved_at = Column(DateTime, nullable=True)
     last_used_at = Column(DateTime, nullable=True)
 
+
 class PairingCode(Base):
     __tablename__ = "pairing_codes"
     code = Column(String(10), primary_key=True)
@@ -157,6 +173,7 @@ class PairingCode(Base):
     device_name = Column(String(255))
     expires_at = Column(DateTime, nullable=False)
     consumed = Column(Boolean, default=False)
+
 
 class TenantConfig(Base):
     __tablename__ = "tenant_configs"
