@@ -1,6 +1,10 @@
-  # chronos_v5/api/routers/trade.py
-# ONLY CHANGE FROM LAST DELIVERY: import line now points at the single
-# canonical module instead of the now-deleted chronos_v5.api.auth_deps
+# chronos_v5/api/routers/trade.py
+# SECURITY FIX: tenant is now taken exclusively from current_user.tenant
+# (the authenticated identity resolved by get_current_user), never from the
+# X-Tenant header. Previously this file used get_tenant_from_request, which
+# let any authenticated caller write or read trades under an arbitrary
+# tenant simply by setting a header. That function is no longer imported
+# here at all.
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Request
 from fastapi_limiter.depends import RateLimiter
 from pydantic import BaseModel, Field, validator
@@ -10,7 +14,7 @@ from chronos_v5.database import AsyncSessionLocal, async_database
 from chronos_v5.repositories.trade_repository import TradeRepositoryAsync
 from chronos_v5.services.predictor import SettlementPredictor
 from chronos_v5.pricing_engine import PricingEngine
-from chronos_v5.api.dependencies import get_current_user, get_tenant_from_request
+from chronos_v5.api.dependencies import get_current_user
 from chronos_v5.tasks import attribute_pnl, generate_alpha_signals
 from chronos_v5.config import Config
 from chronos_v5.models import User
@@ -60,7 +64,7 @@ async def ingest_trade_async(
     request: Request,
     current_user: User = Depends(get_current_user)
 ):
-    tenant = get_tenant_from_request(request)
+    tenant = current_user.tenant
     if not Config.ASYNC_DB or async_database is None:
         raise HTTPException(status_code=501, detail="Async DB not enabled")
     repo = TradeRepositoryAsync()
@@ -100,7 +104,7 @@ def ingest_trade_sync(
     current_user: User = Depends(get_current_user)
 ):
     from chronos_v5.repositories.trade_repository import TradeRepository
-    tenant = get_tenant_from_request(request)
+    tenant = current_user.tenant
     repo = TradeRepository()
     existing = repo.get_by_idempotency(trade.idempotency_key, tenant=tenant)
     if existing:
