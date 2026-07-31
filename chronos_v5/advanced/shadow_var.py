@@ -10,7 +10,10 @@ import redis
 import json
 
 class ShadowVaR:
-    def __init__(self):
+    def __init__(self, tenant: str):
+        if not tenant:
+            raise ValueError("ShadowVaR requires a tenant")
+        self.tenant = tenant
         self.db = SyncSessionLocal()
         self.redis = redis.from_url(Config.REDIS_URL)
         self.last_update = None
@@ -19,7 +22,7 @@ class ShadowVaR:
 
     def compute_shadow_var(self, desk=None):
         cutoff = datetime.now() - timedelta(days=AdvancedConfig.SHADOW_VAR_LOOKBACK_DAYS)
-        query = self.db.query(Trade).filter(Trade.created_at > cutoff)
+        query = self.db.query(Trade).filter(Trade.created_at > cutoff, Trade.tenant == self.tenant)
         if desk:
             query = query.filter(Trade.desk == desk)
         trades = query.all()
@@ -57,13 +60,13 @@ class ShadowVaR:
             "stress_losses": stress_losses,
             "timestamp": datetime.now().isoformat()
         }
-        key = f"shadow_var:{desk or 'TOTAL'}"
+        key = f"shadow_var:{self.tenant}:{desk or 'TOTAL'}"
         self.redis.setex(key, 600, json.dumps(data))
-        logger.info(f"Shadow VaR computed for {desk or 'TOTAL'}")
+        logger.info(f"Shadow VaR computed for tenant={self.tenant} desk={desk or 'TOTAL'}")
         return data
 
     def get_shadow_var(self, desk=None):
-        key = f"shadow_var:{desk or 'TOTAL'}"
+        key = f"shadow_var:{self.tenant}:{desk or 'TOTAL'}"
         cached = self.redis.get(key)
         if cached:
             return json.loads(cached)
@@ -73,7 +76,10 @@ class ShadowVaR:
         import schedule, time
         def job():
             self.compute_shadow_var()
-            desks = set([t.desk for t in self.db.query(Trade.desk).distinct()])
+            desks = set([
+                t.desk for t in
+                self.db.query(Trade.desk).filter(Trade.tenant == self.tenant).distinct()
+            ])
             for d in desks:
                 self.compute_shadow_var(d)
         schedule.every(AdvancedConfig.SHADOW_VAR_UPDATE_INTERVAL_SEC).seconds.do(job)
