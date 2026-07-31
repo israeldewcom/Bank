@@ -1,5 +1,9 @@
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends
-from chronos_v5.api.dependencies import get_api_key
+# chronos_v5/api/routers/websocket.py
+# SECURITY FIX: get_api_key was imported but never actually applied as a
+# dependency, so /ws/market accepted any unauthenticated connection. It is
+# now checked before websocket.accept() is called.
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends, status
+from chronos_v5.config import Config
 from chronos_v5.nigeria_adapter import nigeria
 import json, asyncio
 from datetime import datetime
@@ -29,6 +33,11 @@ manager = ConnectionManager()
 
 @router.websocket("/market")
 async def websocket_market(websocket: WebSocket):
+    api_key = websocket.headers.get("X-API-Key") or websocket.query_params.get("api_key")
+    if api_key != Config.API_KEY:
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
+
     await manager.connect(websocket)
     try:
         while True:
