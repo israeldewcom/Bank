@@ -59,6 +59,7 @@ class Config:
     HSM_PKCS11_LIB = os.getenv("HSM_PKCS11_LIB", "/usr/lib/libcloudhsm_pkcs11.so")
     HSM_TOKEN_LABEL = os.getenv("HSM_TOKEN_LABEL", "chronos")
     HSM_PIN = os.getenv("HSM_PIN", "changeme")
+    HSM_FALLBACK_PATH = os.getenv("HSM_FALLBACK_PATH", "/secure/chronos/fallback_rsa.pem")
 
     # ===== MODEL =====
     MODEL_PATH = os.getenv("CHRONOS_MODEL", "./model_v5.pkl")
@@ -220,10 +221,9 @@ class Config:
             else:
                 errors.append("ENCRYPTION_KEY is not set and cannot be derived (SECRET_KEY missing)")
 
-        # SECURITY FIX: Enforce explicit JWT_SECRET in production
+        # JWT_SECRET validation
         if not cls.JWT_SECRET:
             if cls.SECRET_KEY:
-                # Derive for development convenience, but warn
                 cls.JWT_SECRET = cls.SECRET_KEY
                 import warnings
                 warnings.warn("JWT_SECRET was not set explicitly; using SECRET_KEY as JWT_SECRET. "
@@ -234,8 +234,10 @@ class Config:
         # In production, we MUST have a separate JWT_SECRET
         if cls.ENV == "production":
             if cls.JWT_SECRET == cls.SECRET_KEY:
-                errors.append("In production, JWT_SECRET must be explicitly set and different from SECRET_KEY. "
-                              "Please set JWT_SECRET in your .env file.")
+                errors.append(
+                    "In production, JWT_SECRET must be explicitly set and different from SECRET_KEY. "
+                    "Please set JWT_SECRET in your .env file."
+                )
             elif not cls.JWT_SECRET or len(cls.JWT_SECRET) < 32:
                 errors.append("JWT_SECRET must be at least 32 characters long in production.")
 
@@ -257,6 +259,27 @@ class Config:
         # NIBSS (required for production)
         if cls.ENV == "production" and not cls.NIBSS_API_KEY:
             errors.append("NIBSS_API_KEY is required in production")
+
+        # ADMIN_PASSWORD validation – if set to weak default, error in production
+        admin_password = os.getenv("ADMIN_PASSWORD")
+        if cls.ENV == "production":
+            if not admin_password:
+                errors.append("ADMIN_PASSWORD must be set in production")
+            elif admin_password in ("Admin123!", "password", "admin", "changeme"):
+                errors.append(
+                    f"ADMIN_PASSWORD is set to a weak default value ('{admin_password}'). "
+                    "Please set a strong, unique password."
+                )
+
+        # HSM_FALLBACK_PATH security – forbid /tmp in production
+        if cls.ENV == "production" and not cls.HSM_ENABLED:
+            fallback_path = cls.HSM_FALLBACK_PATH
+            if not fallback_path or fallback_path.startswith("/tmp/"):
+                errors.append(
+                    "HSM is disabled in production and HSM_FALLBACK_PATH points to /tmp/ or is not set. "
+                    "Either enable HSM (HSM_ENABLED=true) or set HSM_FALLBACK_PATH to a secure volume "
+                    "(e.g., /secure/chronos/fallback_rsa.pem) with proper permissions."
+                )
 
         if errors:
             raise RuntimeError("Configuration validation failed:\n - " + "\n - ".join(errors))
