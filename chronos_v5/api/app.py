@@ -206,7 +206,25 @@ def ensure_admin_exists():
             return
 
         admin_email = os.getenv("ADMIN_EMAIL", "admin@chronos.local")
-        admin_password = os.getenv("ADMIN_PASSWORD", "Admin123!")
+        admin_password = os.getenv("ADMIN_PASSWORD", None)
+
+        # SECURITY FIX: Reject missing or weak default password in production
+        if Config.ENV == "production":
+            if not admin_password:
+                logger.critical("ADMIN_PASSWORD environment variable is not set. Admin creation will fail.")
+                return
+            if admin_password in ("Admin123!", "password", "admin", "changeme"):
+                logger.critical(
+                    f"ADMIN_PASSWORD is set to a weak default ('{admin_password}') in production. "
+                    "Please set a strong, unique password."
+                )
+                return
+
+        # If still no password (e.g., dev), use a fallback but warn
+        if not admin_password:
+            admin_password = "Admin123!"
+            logger.warning("Using default ADMIN_PASSWORD for development. Set it in .env for production.")
+
         hashed = bcrypt.hashpw(admin_password.encode(), bcrypt.gensalt()).decode()
         admin_id = uuid.uuid4()
         now = datetime.now(timezone.utc)
