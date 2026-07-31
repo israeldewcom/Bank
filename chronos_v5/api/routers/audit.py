@@ -5,14 +5,16 @@ from chronos_v5.models import User
 from datetime import datetime, timezone
 
 router = APIRouter()
-repo = AuditRepository()
+
 
 @router.get("/trade/{trade_id}")
 def audit_trade(trade_id: str, current_user: User = Depends(get_current_user)):
+    repo = AuditRepository()
     result = repo.get_trade_audit(trade_id, tenant=current_user.tenant)
     if not result.get("trade"):
         raise HTTPException(status_code=404, detail="Trade not found")
     return result
+
 
 @router.get("/logs")
 async def get_audit_logs(current_user: User = Depends(get_current_user)):
