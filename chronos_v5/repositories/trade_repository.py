@@ -1,4 +1,9 @@
 # chronos_v5/repositories/trade_repository.py
+# SECURITY FIX: tenant used to default to None on get / get_by_idempotency /
+# get_all across both classes, meaning a caller could accidentally omit it
+# and silently get cross-tenant results. tenant is now a required, non-
+# optional parameter on every read method in both TradeRepository and
+# TradeRepositoryAsync.
 from chronos_v5.database import SyncSessionLocal, async_database, AsyncSessionLocal
 from chronos_v5.models import Trade
 from sqlalchemy import select, desc
@@ -49,35 +54,29 @@ class TradeRepository:
             logger.error(f"Trade insert failed: {e}")
             raise
 
-    def get(self, trade_id: str, tenant: str = None):
+    def get(self, trade_id: str, tenant: str):
         try:
-            q = self.db.query(Trade).filter(Trade.id == trade_id)
-            if tenant is not None:
-                q = q.filter(Trade.tenant == tenant)
+            q = self.db.query(Trade).filter(Trade.id == trade_id, Trade.tenant == tenant)
             return q.first()
         except Exception as e:
             self.db.rollback()
             logger.error(f"Trade get failed: {e}")
             raise
 
-    def get_by_idempotency(self, key: str, tenant: str = None):
+    def get_by_idempotency(self, key: str, tenant: str):
         if not key:
             return None
         try:
-            q = self.db.query(Trade).filter(Trade.idempotency_key == key)
-            if tenant is not None:
-                q = q.filter(Trade.tenant == tenant)
+            q = self.db.query(Trade).filter(Trade.idempotency_key == key, Trade.tenant == tenant)
             return q.first()
         except Exception as e:
             self.db.rollback()
             logger.error(f"get_by_idempotency failed: {e}")
             raise
 
-    def get_all(self, limit=50, offset=0, tenant: str = None):
+    def get_all(self, tenant: str, limit=50, offset=0):
         try:
-            q = self.db.query(Trade)
-            if tenant is not None:
-                q = q.filter(Trade.tenant == tenant)
+            q = self.db.query(Trade).filter(Trade.tenant == tenant)
             return q.order_by(desc(Trade.created_at)).limit(limit).offset(offset).all()
         except Exception as e:
             self.db.rollback()
@@ -117,12 +116,10 @@ class TradeRepositoryAsync:
                 logger.error(f"Async trade insert failed: {e}")
                 raise
 
-    async def get(self, trade_id: str, tenant: str = None):
+    async def get(self, trade_id: str, tenant: str):
         async with AsyncSessionLocal() as session:
             try:
-                stmt = select(Trade).where(Trade.id == trade_id)
-                if tenant is not None:
-                    stmt = stmt.where(Trade.tenant == tenant)
+                stmt = select(Trade).where(Trade.id == trade_id, Trade.tenant == tenant)
                 result = await session.execute(stmt)
                 return result.scalar_one_or_none()
             except Exception as e:
@@ -130,14 +127,12 @@ class TradeRepositoryAsync:
                 logger.error(f"Async trade get failed: {e}")
                 raise
 
-    async def get_by_idempotency(self, key: str, tenant: str = None):
+    async def get_by_idempotency(self, key: str, tenant: str):
         if not key:
             return None
         async with AsyncSessionLocal() as session:
             try:
-                stmt = select(Trade).where(Trade.idempotency_key == key)
-                if tenant is not None:
-                    stmt = stmt.where(Trade.tenant == tenant)
+                stmt = select(Trade).where(Trade.idempotency_key == key, Trade.tenant == tenant)
                 result = await session.execute(stmt)
                 return result.scalar_one_or_none()
             except Exception as e:
@@ -145,12 +140,10 @@ class TradeRepositoryAsync:
                 logger.error(f"Async get_by_idempotency failed: {e}")
                 raise
 
-    async def get_all(self, limit=50, offset=0, tenant: str = None):
+    async def get_all(self, tenant: str, limit=50, offset=0):
         async with AsyncSessionLocal() as session:
             try:
-                stmt = select(Trade)
-                if tenant is not None:
-                    stmt = stmt.where(Trade.tenant == tenant)
+                stmt = select(Trade).where(Trade.tenant == tenant)
                 stmt = stmt.order_by(desc(Trade.created_at)).limit(limit).offset(offset)
                 result = await session.execute(stmt)
                 return result.scalars().all()
