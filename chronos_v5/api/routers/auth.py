@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi_limiter.depends import RateLimiter
 from pydantic import BaseModel, EmailStr
 from chronos_v5.services.auth_service import AuthService
-from chronos_v5.api.dependencies import get_current_user, get_tenant_from_request
+from chronos_v5.api.dependencies import get_current_user, get_tenant_for_registration
 from chronos_v5.models import User
 from chronos_v5.config import Config
 from chronos_v5.logger_setup import logger
@@ -31,7 +31,7 @@ class PairRequest(BaseModel):
     dependencies=[Depends(RateLimiter(times=5, seconds=3600))]
 )
 def register(req: RegisterRequest, request: Request):
-    tenant = get_tenant_from_request(request)
+    tenant = get_tenant_for_registration(request)
     service = AuthService()
     try:
         user = service.register_user(req.email, req.password, req.full_name, tenant)
