@@ -31,12 +31,12 @@ class HSMAbstraction:
             if Config.ENV == "production":
                 raise RuntimeError(
                     "HSM is disabled in production. This is a security risk. "
-                    "Either enable HSM (HSM_ENABLED=true) or use a secure software fallback volume."
+                    "Either enable HSM (HSM_ENABLED=true) or use a secure software fallback volume "
+                    "by setting HSM_FALLBACK_PATH to a secure directory (not /tmp)."
                 )
             
-            # Ensure encryption key is available (Config.validate() should have set it)
+            # Ensure encryption key is available
             if Config.ENCRYPTION_KEY is None:
-                # Fallback: derive a deterministic key from SECRET_KEY (similar to validate)
                 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
                 from cryptography.hazmat.primitives import hashes
                 import base64
@@ -46,14 +46,14 @@ class HSMAbstraction:
                 logger.warning("ENCRYPTION_KEY was None; derived from SECRET_KEY as fallback.")
             self._fernet_key = Config.ENCRYPTION_KEY.encode()
             self._fernet_cipher = Fernet(self._fernet_key)
-            # SECURITY FIX: Configurable fallback key path
+            
+            # Use the configured fallback path; reject /tmp in production (already enforced in config.validate)
             self._fallback_key_path = os.getenv("HSM_FALLBACK_PATH", "/secure/chronos/fallback_rsa.pem")
             self._private_key = self._derive_rsa_key(Config.SECRET_KEY.encode())
             self._public_key = self._private_key.public_key()
 
     def _derive_rsa_key(self, seed: bytes):
         from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
-        from cryptography.hazmat.primitives.kdf.hkdf import HKDF
         import hashlib
         
         # Ensure the directory exists
@@ -64,10 +64,16 @@ class HSMAbstraction:
                 logger.info(f"Created secure directory for fallback key: {key_dir}")
             except Exception as e:
                 logger.error(f"Failed to create secure directory {key_dir}: {e}")
-                # Fallback to a temp dir as last resort, but log a critical warning
+                # Fallback to a temp dir as last resort, but only if not in production
+                if Config.ENV == "production":
+                    raise RuntimeError(
+                        f"Cannot create secure directory {key_dir} in production. "
+                        "Set HSM_FALLBACK_PATH to an existing secure volume."
+                    )
                 import tempfile
                 self._fallback_key_path = os.path.join(tempfile.gettempdir(), "chronos_fallback_rsa.pem")
-                logger.critical(f"Using insecure fallback path: {self._fallback_key_path}. Set HSM_FALLBACK_PATH to a secure volume.")
+                logger.critical(f"Using insecure fallback path: {self._fallback_key_path}. "
+                                "Set HSM_FALLBACK_PATH to a secure volume.")
 
         if os.path.exists(self._fallback_key_path):
             try:
