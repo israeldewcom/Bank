@@ -2,11 +2,18 @@ from celery import Celery
 from chronos_v5.config import Config
 import os
 
+# BUG FIX: this referenced chronos_v5.advanced.advanced_tasks (plural),
+# but the actual file is chronos_v5/advanced/advanced_task.py (singular).
+# Celery's include list uses importlib under the hood, so this module
+# failed to import at worker startup — advanced_optimize,
+# advanced_shadow_var, advanced_trigger_cbn_event, advanced_calibrate,
+# and advanced_backfill_train (all defined in that file) never registered
+# with the worker and could never be dispatched or scheduled.
 celery_app = Celery(
     "chronos",
     broker=Config.CELERY_BROKER_URL,
     backend=Config.CELERY_RESULT_BACKEND,
-    include=["chronos_v5.tasks", "chronos_v5.advanced.advanced_tasks"]
+    include=["chronos_v5.tasks", "chronos_v5.advanced.advanced_task"]
 )
 
 celery_app.conf.update(
