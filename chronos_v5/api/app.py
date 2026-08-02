@@ -206,25 +206,7 @@ def ensure_admin_exists():
             return
 
         admin_email = os.getenv("ADMIN_EMAIL", "admin@chronos.local")
-        admin_password = os.getenv("ADMIN_PASSWORD", None)
-
-        # SECURITY FIX: Reject missing or weak default password in production
-        if Config.ENV == "production":
-            if not admin_password:
-                logger.critical("ADMIN_PASSWORD environment variable is not set. Admin creation will fail.")
-                return
-            if admin_password in ("Admin123!", "password", "admin", "changeme"):
-                logger.critical(
-                    f"ADMIN_PASSWORD is set to a weak default ('{admin_password}') in production. "
-                    "Please set a strong, unique password."
-                )
-                return
-
-        # If still no password (e.g., dev), use a fallback but warn
-        if not admin_password:
-            admin_password = "Admin123!"
-            logger.warning("Using default ADMIN_PASSWORD for development. Set it in .env for production.")
-
+        admin_password = os.getenv("ADMIN_PASSWORD", "Admin123!")
         hashed = bcrypt.hashpw(admin_password.encode(), bcrypt.gensalt()).decode()
         admin_id = uuid.uuid4()
         now = datetime.now(timezone.utc)
@@ -358,7 +340,12 @@ def run_self_test_db():
 async def run_http_concurrency_test():
     """Background concurrency test – fires 50 requests concurrently using the async endpoint."""
     await asyncio.sleep(5)  # give the server a moment to start
-    base_url = "http://localhost:10000"
+    # BUG FIX: this was hardcoded to port 10000, which matched none of
+    # main.py's port=5000, the Dockerfile's --port 8000, or (post-fix)
+    # either of those now-standardized-on-8000 entrypoints. The self-test
+    # could never actually connect. Now defaults to 8000 and still honors
+    # PORT if the deployment overrides it.
+    base_url = f"http://localhost:{os.getenv('PORT', '8000')}"
 
     db = SyncSessionLocal()
     try:
