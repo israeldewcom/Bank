@@ -23,7 +23,9 @@ def main():
         logger.error(f"Configuration error: {e}")
         raise
     start_migration()
-    logger.info("Starting Chronos v5.2.1 Full Production Edition on http://0.0.0.0:5000")
+    # BUG FIX: standardized on port 8000 to match the Dockerfile's actual
+    # CMD (--port 8000) — see the matching note in advanced_main.py.
+    logger.info("Starting Chronos v5.2.1 Full Production Edition on http://0.0.0.0:8000")
     if Config.PROFILING_ENABLED:
         try:
             import py_spy
@@ -39,7 +41,7 @@ def main():
         logger.warning(f"Prometheus start failed: {e}")
     # Use multiple workers, but ensure advanced services are started only once via lock
     # We'll start advanced services in a separate process or with lock, but for simplicity we'll rely on celery.
-    uvicorn.run("chronos_v5.api.app:app", host="0.0.0.0", port=5000,
+    uvicorn.run("chronos_v5.api.app:app", host="0.0.0.0", port=8000,
                 log_level=Config.LOG_LEVEL.lower(),
                 workers=4, loop="uvloop", http="httptools",
                 access_log=False)
