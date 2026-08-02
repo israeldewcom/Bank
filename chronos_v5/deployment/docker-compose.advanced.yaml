@@ -22,8 +22,10 @@ services:
   chronos-api-advanced:
     build: .
     command: python -m chronos_v5.advanced_main
+    # BUG FIX: was "5000:5000"; advanced_main.py now binds 8000 to match
+    # the Dockerfile's actual --port 8000 everywhere else in the project.
     ports:
-      - "5000:5000"
+      - "8000:8000"
     environment:
       DATABASE_URL: postgresql://chronos:${POSTGRES_PASSWORD:-chronos}@postgres:5432/chronos
       REDIS_URL: redis://redis:6379/0
