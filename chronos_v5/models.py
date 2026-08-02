@@ -1,128 +1,185 @@
-"""
-Advanced entry point for Chronos v5.2 that starts both original and advanced services.
-This file does not modify original main.py; it imports and runs everything together.
-"""
-import threading, asyncio, uvicorn, time, os
-from chronos_v5.config import Config
-from chronos_v5.logger_setup import logger
-from chronos_v5.database import run_migrations
-from chronos_v5.utils.ssl_renewal import ssl_renewal_loop
-from chronos_v5.api.app import app
-from chronos_v5.nigeria_adapter import nigeria
-from chronos_v5.tasks import generate_alpha_signals, optimize_rehypothecation, compute_risk_metrics
-from chronos_v5.advanced.advanced_config import AdvancedConfig
-from chronos_v5.advanced.cbn_event_listener import cbn_listener
-from chronos_v5.advanced.shadow_var import ShadowVaR
-from chronos_v5.advanced.advanced_optimizer import AdvancedProfitOptimizer
-from chronos_v5.advanced.dynamic_pricing import DynamicPricingEngine
-from chronos_v5.advanced.dynamic_calibrator import DynamicCalibrator
-from chronos_v5.advanced.backfill_trainer import BackfillTrainer
-import redis
+# chronos_v5/models.py
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy import (
+    Column, String, Float, Boolean, DateTime,
+    Text, BigInteger, ForeignKey, JSON, Enum as SQLAEnum
+)
+from datetime import datetime, timezone
+import uuid
 
-def start_advanced_services():
-    if not AdvancedConfig.ADVANCED_FEATURES_ENABLED:
-        logger.info("Advanced features disabled")
-        return
-    logger.info("Starting advanced services...")
-    # Use Redis lock to ensure only one instance runs these
-    r = redis.from_url(Config.REDIS_URL)
-    lock_key = "advanced:services:lock"
-    # Try to acquire lock with expiry
-    lock = r.setnx(lock_key, "1")
-    if not lock:
-        logger.info("Advanced services already running on another instance")
-        return
-    # Set expiry, but we will renew it
-    r.expire(lock_key, 30)  # short expiry, renewed every 20s
+Base = declarative_base()
 
-    # Start a background thread to renew the lock
-    def renew_lock():
-        while True:
-            time.sleep(20)
-            try:
-                r.expire(lock_key, 30)
-                logger.debug("Advanced services lock renewed")
-            except Exception as e:
-                logger.error(f"Failed to renew advanced lock: {e}")
-                break
+class Trade(Base):
+    __tablename__ = "trades"
+    id = Column(String(36), primary_key=True)
+    desk = Column(String(100), nullable=False)
+    counterparty_id = Column(String(100), nullable=False)
+    instrument_type = Column(String(50))
+    currency = Column(String(10), nullable=False)
+    notional = Column(Float, nullable=False)
+    settle_date = Column(DateTime, nullable=False)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    status = Column(String(20), default="PENDING")
+    fail_probability = Column(Float, default=0.0)
+    price_quote = Column(JSON, nullable=True)
+    idempotency_key = Column(String(100), unique=True, nullable=True)
+    encrypted_counterparty = Column(Text, nullable=True)
+    tenant = Column(String(50), default="default", nullable=False, index=True)
+    nibss_ref = Column(String(100), nullable=True)
+    settled_at = Column(DateTime, nullable=True)
 
-    lock_renewer = threading.Thread(target=renew_lock, daemon=True)
-    lock_renewer.start()
+class Counterparty(Base):
+    __tablename__ = "counterparties"
+    id = Column(String(100), primary_key=True)
+    name = Column(String(200), nullable=False)
+    risk_score = Column(Float, default=0.1)
+    credit_rating = Column(String(10))
+    total_exposure = Column(Float, default=0.0)
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    tenant = Column(String(50), default="default", nullable=False, index=True)
 
-    # Start CBN listener
-    cbn_listener.start()
+class FailHistory(Base):
+    __tablename__ = "fail_history"
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    trade_id = Column(String(36), nullable=False)
+    failed = Column(Boolean, nullable=False)
+    failure_reason = Column(Text, nullable=True)
+    timestamp = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    notional = Column(Float)
 
-    # Start Shadow VaR loop
-    def shadow_var_loop():
-        var = ShadowVaR()
-        var.run_continuous()
-    t = threading.Thread(target=shadow_var_loop, daemon=True)
-    t.start()
+class PnLAttribution(Base):
+    __tablename__ = "pnl_attribution"
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    trade_id = Column(String(36), nullable=False)
+    strategy = Column(String(50))
+    amount_saved = Column(Float, nullable=False)
+    currency = Column(String(10), default="NGN")
+    timestamp = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    metadata_json = Column(Text, nullable=True)
+    tenant = Column(String(50), default="default", nullable=False, index=True)
 
-    # Start calibrator loop
-    def calibrator_loop():
-        calibrator = DynamicCalibrator()
-        while True:
-            time.sleep(AdvancedConfig.CALIBRATION_INTERVAL_SEC)
-            calibrator.calibrate()
-    t2 = threading.Thread(target=calibrator_loop, daemon=True)
-    t2.start()
+class CollateralHolding(Base):
+    __tablename__ = "collateral_holdings"
+    id = Column(BigInteger, primary_key=True)
+    counterparty_id = Column(String(100), nullable=False)
+    asset_type = Column(String(50), nullable=False)
+    quantity = Column(Float, nullable=False)
+    market_value = Column(Float, nullable=False)
+    haircut = Column(Float, nullable=False)
+    eligible = Column(Boolean, default=True)
+    last_updated = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    tenant = Column(String(50), default="default", nullable=False, index=True)
 
-    if AdvancedConfig.BACKFILL_TRAINING_ENABLED:
-        trainer = BackfillTrainer()
-        trainer.train()
+class MarketDataPoint(Base):
+    __tablename__ = "market_data"
+    id = Column(BigInteger, primary_key=True)
+    symbol = Column(String(50), nullable=False)
+    price = Column(Float, nullable=False)
+    volume = Column(Float)
+    timestamp = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+    source = Column(String(50))
 
-    try:
-        optimizer = AdvancedProfitOptimizer()
-        optimizer.run()
-    except Exception as e:
-        logger.error(f"Initial advanced optimization failed: {e}")
+class AlphaSignal(Base):
+    __tablename__ = "alpha_signals"
+    id = Column(BigInteger, primary_key=True)
+    asset = Column(String(50), nullable=False)
+    signal_value = Column(Float, nullable=False)
+    strategy = Column(String(50))
+    generated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    expiry = Column(DateTime)
 
-    logger.info("Advanced services started")
+class ExecutionOrder(Base):
+    __tablename__ = "execution_orders"
+    id = Column(BigInteger, primary_key=True)
+    trade_id = Column(String(36), nullable=False, index=True)
+    order_type = Column(String(20))
+    side = Column(String(10))
+    quantity = Column(Float)
+    price = Column(Float)
+    status = Column(String(20))
+    sent_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    filled_at = Column(DateTime)
+    external_order_id = Column(String(100))
 
-def start_migration():
-    logger.info("Running database migrations...")
-    run_migrations()
-    logger.info("Migrations complete.")
+class RiskMetrics(Base):
+    __tablename__ = "risk_metrics"
+    id = Column(BigInteger, primary_key=True)
+    desk = Column(String(100), nullable=False)
+    var_99 = Column(Float)
+    expected_shortfall = Column(Float)
+    stress_loss = Column(Float)
+    capital_usage = Column(Float)
+    timestamp = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    tenant = Column(String(50), default="default", nullable=False, index=True)
 
-def start_ssl_thread():
-    t = threading.Thread(target=ssl_renewal_loop, daemon=True)
-    t.start()
+class User(Base):
+    __tablename__ = "users"
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    email = Column(String(255), unique=True, nullable=False, index=True)
+    password_hash = Column(String(255), nullable=False)
+    full_name = Column(String(255))
+    # SCHEMA FIX: `status` used to exist only in the (unreachable) Alembic
+    # migration, never on this ORM model. Every runtime query the app
+    # actually issues goes through this class, so `User.status` was an
+    # AttributeError waiting to happen — chronos_v5/api/routers/admin.py's
+    # list_pending_users() and chronos_v5/repositories/user_repository.py's
+    # get_pending_users() both filtered on it and would raise on every call.
+    # status is now the source of truth for the approval workflow
+    # (pending -> approved / rejected); is_active is derived from it and
+    # kept for backward-compatible reads (device/API-key checks already
+    # query is_active). register_user() sets status="pending" and
+    # is_active=False; approve_user()/reject_user() keep both in sync.
+    status = Column(String(20), default="pending", nullable=False, index=True)
+    is_active = Column(Boolean, default=False)
+    role = Column(String(20), default="user")
+    trial_expiry = Column(DateTime, nullable=True)
+    last_login = Column(DateTime, nullable=True)
+    tenant = Column(String(50), default="default", nullable=False, index=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
-def main():
-    try:
-        Config.validate()
-    except RuntimeError as e:
-        logger.error(f"Configuration error: {e}")
-        raise
-    start_migration()
-    # BUG FIX: this said "on http://0.0.0.0:5000" and passed port=5000 to
-    # uvicorn.run() below, but the Dockerfile's actual CMD runs uvicorn on
-    # --port 8000, and chronos_v5/api/app.py's HTTP self-test hardcodes
-    # base_url = "http://localhost:10000". Three different ports for one
-    # service meant the self-test could never reach the server regardless
-    # of which entrypoint started it. Standardized on 8000 (the Dockerfile's
-    # port, since that's the actual container entrypoint) everywhere.
-    logger.info("Starting Chronos v5.2.1 Full Production Edition (Advanced) on http://0.0.0.0:8000")
-    if Config.PROFILING_ENABLED:
-        try:
-            import py_spy
-            logger.info("Profiling enabled via py-spy")
-        except ImportError:
-            logger.warning("py-spy not installed")
-    start_ssl_thread()
-    start_advanced_services()
-    try:
-        from prometheus_client import start_http_server
-        start_http_server(8001)
-        logger.info("Prometheus metrics server on :8001")
-    except Exception as e:
-        logger.warning(f"Prometheus start failed: {e}")
-    # Use multiple workers for API, advanced services are in separate threads/locks
-    uvicorn.run("chronos_v5.api.app:app", host="0.0.0.0", port=8000,
-                log_level=Config.LOG_LEVEL.lower(),
-                workers=4, loop="uvloop", http="httptools",
-                access_log=False)
+class APIKey(Base):
+    __tablename__ = "api_keys"
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id = Column(String(36), ForeignKey("users.id"), nullable=False)
+    key_prefix = Column(String(20), nullable=False)
+    key_hash = Column(String(255), nullable=False)
+    tenant = Column(String(50), default="default", nullable=False, index=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    revoked_at = Column(DateTime, nullable=True)
+    last_used_at = Column(DateTime, nullable=True)
 
-if __name__ == "__main__":
-    main()
+class Device(Base):
+    __tablename__ = "devices"
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id = Column(String(36), ForeignKey("users.id"), nullable=False)
+    device_name = Column(String(255))
+    device_fingerprint = Column(String(255), nullable=False)
+    status = Column(SQLAEnum("pending", "approved", "revoked", name="device_status"), default="pending")
+    tenant = Column(String(50), default="default", nullable=False, index=True)
+    requested_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    approved_by = Column(String(36), ForeignKey("users.id"), nullable=True)
+    approved_at = Column(DateTime, nullable=True)
+    last_used_at = Column(DateTime, nullable=True)
+
+class PairingCode(Base):
+    __tablename__ = "pairing_codes"
+    code = Column(String(10), primary_key=True)
+    user_id = Column(String(36), ForeignKey("users.id"), nullable=False)
+    device_name = Column(String(255))
+    expires_at = Column(DateTime, nullable=False)
+    consumed = Column(Boolean, default=False)
+
+class TenantConfig(Base):
+    __tablename__ = "tenant_configs"
+    tenant = Column(String(50), primary_key=True)
+    performance_fee_percent = Column(Float, default=0.20)
+    bloomberg_api_key_enc = Column(Text, nullable=True)
+    reuters_api_key_enc = Column(Text, nullable=True)
+    alpha_vantage_key_enc = Column(Text, nullable=True)
+    nibss_api_key_enc = Column(Text, nullable=True)
+    cbn_openapi_url = Column(String(255), nullable=True)
+    ngx_api_url = Column(String(255), nullable=True)
+    use_global_model = Column(Boolean, default=True)
+    alpha_strategy_type = Column(String(50), nullable=True)
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
