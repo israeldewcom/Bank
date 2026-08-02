@@ -3,10 +3,11 @@ import bcrypt
 import secrets
 import uuid
 import re
+import redis
 from datetime import datetime, timedelta, timezone
 from chronos_v5.database import SyncSessionLocal
 from chronos_v5.models import User, APIKey, Device, PairingCode
-from chronos_v5.utils.jwt_utils import create_jwt
+from chronos_v5.utils.jwt_utils import create_jwt, decode_jwt
 from chronos_v5.logger_setup import logger
 from chronos_v5.config import Config
 from sqlalchemy import inspect
@@ -36,6 +37,13 @@ class AuthService:
         return True
 
     def register_user(self, email: str, password: str, full_name: str, tenant: str = "default"):
+        # BUG FIX: this previously set is_active=True at registration while
+        # the /auth/register endpoint told the caller "Awaiting admin
+        # approval" — the message and the actual account state contradicted
+        # each other, so a brand-new, unreviewed account could authenticate
+        # immediately. New accounts now start status="pending",
+        # is_active=False, and only become usable once an admin calls
+        # approve_user() below.
         if self.db.query(User).filter(User.email == email).first():
             raise ValueError("Email already registered")
         self.validate_password_policy(password)
@@ -45,12 +53,13 @@ class AuthService:
             full_name=full_name,
             tenant=tenant,
             created_at=datetime.now(timezone.utc),
-            is_active=True
+            status="pending",
+            is_active=False
         )
         self.db.add(user)
         self.db.commit()
         self.db.refresh(user)
-        logger.info(f"User registered: {email} (tenant: {tenant})")
+        logger.info(f"User registered: {email} (tenant: {tenant}, status: pending)")
         return user
 
     def approve_user(self, user_id: str, admin_id: str):
@@ -58,6 +67,7 @@ class AuthService:
         user = self.db.query(User).filter(User.id == str(user_id)).first()
         if not user:
             raise ValueError("User not found")
+        user.status = "approved"
         user.is_active = True
         raw_key = self.generate_api_key(user.id)
         self.db.commit()
@@ -68,6 +78,7 @@ class AuthService:
         user = self.db.query(User).filter(User.id == str(user_id)).first()
         if not user:
             raise ValueError("User not found")
+        user.status = "rejected"
         user.is_active = False
         self.db.commit()
         logger.info(f"User {user.email} rejected")
@@ -165,6 +176,43 @@ class AuthService:
         if not device:
             raise ValueError("Device not approved or does not exist")
         device.last_used_at = datetime.now(timezone.utc)
+        user.last_login = datetime.now(timezone.utc)
         self.db.commit()
-        token = create_jwt(user.id, user.tenant, "user")
+        # SECURITY FIX: JWTs previously had no jti and no revocation path —
+        # a stolen or leaked token stayed valid for its full
+        # JWT_EXPIRE_MINUTES (24h by default) with no way to invalidate it
+        # server-side on logout, password change, or account compromise.
+        # create_jwt now issues a jti and this service exposes
+        # revoke_token()/is_token_revoked() backed by a short-lived Redis
+        # blacklist keyed by jti (TTL'd to the token's own remaining life,
+        # so the blacklist never outgrows the tokens it's protecting).
+        jti = str(uuid.uuid4())
+        token = create_jwt(user.id, user.tenant, user.role, jti=jti)
         return token
+
+    def _redis(self):
+        return redis.from_url(Config.REDIS_URL)
+
+    def revoke_token(self, token: str) -> bool:
+        """Blacklist a JWT by its jti until the token's own expiry."""
+        payload = decode_jwt(token)
+        if not payload:
+            return False
+        jti = payload.get("jti")
+        exp = payload.get("exp")
+        if not jti or not exp:
+            return False
+        ttl = max(int(exp - datetime.now(timezone.utc).timestamp()), 1)
+        r = self._redis()
+        r.setex(f"jwt:revoked:{jti}", ttl, "1")
+        logger.info(f"Token revoked (jti={jti})")
+        return True
+
+    def is_token_revoked(self, jti: str) -> bool:
+        if not jti:
+            return False
+        r = self._redis()
+        return r.exists(f"jwt:revoked:{jti}") == 1
+
+    def logout(self, token: str) -> bool:
+        return self.revoke_token(token)
