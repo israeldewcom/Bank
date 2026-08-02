@@ -1,4 +1,4 @@
- # chronos_v5/config.py
+# chronos_v5/config.py
 import os
 import base64
 import secrets
@@ -43,7 +43,7 @@ class Config:
     ENCRYPTION_KEY = os.getenv("ENCRYPTION_KEY", None)
 
     # ===== NEW AUTH SETTINGS =====
-    JWT_SECRET = os.getenv("JWT_SECRET", None)  # will be derived from SECRET_KEY if not set
+    JWT_SECRET = os.getenv("JWT_SECRET", None)
     JWT_EXPIRE_MINUTES = int(os.getenv("JWT_EXPIRE_MINUTES", "1440"))
     ADMIN_EMAILS = os.getenv("ADMIN_EMAILS", "admin@chronos.local").split(",")
     PASSWORD_MIN_LENGTH = int(os.getenv("PASSWORD_MIN_LENGTH", "12"))
@@ -97,6 +97,8 @@ class Config:
     NIBSS_API_URL = os.getenv("NIBSS_API_URL", "https://api.nibss.gov.ng/v1")
     NIBSS_API_KEY = os.getenv("NIBSS_API_KEY", "")
     NIBSS_TIMEOUT = int(os.getenv("NIBSS_TIMEOUT", "10"))
+    NIBSS_MAX_RETRIES = int(os.getenv("NIBSS_MAX_RETRIES", "3"))
+    NIBSS_RETRY_DELAY = int(os.getenv("NIBSS_RETRY_DELAY", "2"))
 
     # ===== LOGGING =====
     LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
@@ -195,20 +197,16 @@ class Config:
 
     @classmethod
     def validate(cls):
-        """Validate all required configuration variables."""
         errors = []
 
-        # Core DB
         if not cls.DATABASE_URL:
             errors.append("DATABASE_URL is not set")
 
-        # Security keys
         if not cls.SECRET_KEY:
             errors.append("SECRET_KEY is not set (must be at least 32 characters)")
         elif len(cls.SECRET_KEY) < 32:
             errors.append("SECRET_KEY must be at least 32 characters long")
 
-        # Derive ENCRYPTION_KEY from SECRET_KEY if not set
         if not cls.ENCRYPTION_KEY:
             if cls.SECRET_KEY:
                 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
@@ -220,10 +218,8 @@ class Config:
             else:
                 errors.append("ENCRYPTION_KEY is not set and cannot be derived (SECRET_KEY missing)")
 
-        # SECURITY FIX: Enforce explicit JWT_SECRET in production
         if not cls.JWT_SECRET:
             if cls.SECRET_KEY:
-                # Derive for development convenience, but warn
                 cls.JWT_SECRET = cls.SECRET_KEY
                 import warnings
                 warnings.warn("JWT_SECRET was not set explicitly; using SECRET_KEY as JWT_SECRET. "
@@ -231,7 +227,6 @@ class Config:
             else:
                 errors.append("JWT_SECRET is not set and cannot be derived (SECRET_KEY missing)")
 
-        # In production, we MUST have a separate JWT_SECRET
         if cls.ENV == "production":
             if cls.JWT_SECRET == cls.SECRET_KEY:
                 errors.append("In production, JWT_SECRET must be explicitly set and different from SECRET_KEY. "
@@ -239,27 +234,22 @@ class Config:
             elif not cls.JWT_SECRET or len(cls.JWT_SECRET) < 32:
                 errors.append("JWT_SECRET must be at least 32 characters long in production.")
 
-        # Validate JWT_SECRET length (should be at least 32)
         if cls.JWT_SECRET and len(cls.JWT_SECRET) < 32:
             errors.append("JWT_SECRET must be at least 32 characters long (derived from SECRET_KEY or set explicitly)")
 
         if not cls.API_KEY:
             errors.append("CHRONOS_API_KEY is not set")
 
-        # Redis
         if not cls.REDIS_URL:
             errors.append("REDIS_URL is not set")
 
-        # Environment
         if cls.ENV not in ("development", "staging", "production", "test"):
             errors.append(f"CHRONOS_ENV must be one of: development, staging, production, test (got {cls.ENV})")
 
-        # NIBSS (required for production)
         if cls.ENV == "production" and not cls.NIBSS_API_KEY:
             errors.append("NIBSS_API_KEY is required in production")
 
         if errors:
             raise RuntimeError("Configuration validation failed:\n - " + "\n - ".join(errors))
 
-# Auto‑validate on import
 Config.validate()
