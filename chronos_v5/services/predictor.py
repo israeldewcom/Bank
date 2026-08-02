@@ -25,16 +25,6 @@ class _ConstantProbabilityPredictor:
 
 class SettlementPredictor:
     def __init__(self, db_session=None, retrain_on_init=True):
-        # NOTE: self.db is retained here and used only by the infrequent
-        # model-lifecycle methods (_fit_historical_baseline, _retrain_if_needed),
-        # which run at construction time or on drift-triggered retrain, not on
-        # every hot-path predict() call. The per-trade hot-path methods below
-        # (predict, _get_counterparty_risk, _get_desk_exposure) deliberately do
-        # NOT use self.db — they open and close their own short-lived session —
-        # because SettlementPredictor is instantiated once at module scope in
-        # api/routers/model.py (predictor = SettlementPredictor(...)) and shared
-        # across every concurrent request there. A long-lived shared session on
-        # the hot path would not be thread-safe.
         self.db = db_session or SyncSessionLocal()
         self.model = None
         self.online_model = None
@@ -74,20 +64,12 @@ class SettlementPredictor:
             self._fit_historical_baseline()
 
     def _fit_historical_baseline(self):
-        """
-        SECURITY FIX: Replaces the dummy 3-row model with a statistically valid baseline.
-        Uses DummyClassifier(strategy="prior") trained on a dataset with the historical fail rate.
-        This ensures predict_proba returns a constant probability equal to the fail rate.
-        """
         from sklearn.dummy import DummyClassifier
-
         try:
-            # Try to get historical fail rate from the last 30 days
             cutoff = datetime.now(timezone.utc) - timedelta(days=30)
             history = self.db.query(FailHistory).filter(
                 FailHistory.timestamp > cutoff
             ).limit(1000).all()
-            
             if history:
                 fail_count = sum(1 for h in history if h.failed)
                 total = len(history)
@@ -97,25 +79,18 @@ class SettlementPredictor:
                 fail_rate = Config.DEFAULT_FAIL_RATE
                 logger.warning(f"No historical data found. Using default fail rate: {fail_rate:.4f}")
 
-            # Create a synthetic training dataset where the class proportion matches fail_rate
             n_samples = 1000
             n_fail = int(n_samples * fail_rate)
             n_success = n_samples - n_fail
-            X = np.random.randn(n_samples, 9)  # 9 features, doesn't matter for DummyClassifier
+            X = np.random.randn(n_samples, 9)
             y = np.array([1] * n_fail + [0] * n_success)
-            
-            # Shuffle
             idx = np.random.permutation(n_samples)
             X, y = X[idx], y[idx]
-
-            # Use DummyClassifier with strategy="prior" – it will learn the class priors
             self.model = DummyClassifier(strategy="prior")
             self.model.fit(X, y)
             logger.info(f"Baseline model fitted with prior fail rate: {fail_rate:.4f}")
-
         except Exception as e:
             logger.error(f"Historical baseline fitting failed: {e}. Falling back to constant predictor.")
-            # Absolute last resort – use the constant probability predictor
             self.model = _ConstantProbabilityPredictor(Config.DEFAULT_FAIL_RATE)
             logger.info(f"Constant probability predictor set to {Config.DEFAULT_FAIL_RATE:.4f}")
 
@@ -168,22 +143,16 @@ class SettlementPredictor:
             ]
             return df[['notional','counterparty_risk','days_to_settle','instrument_volatility','market_volatility','haircut','rehypo_yield','emergency_rate','desk_exposure']]
 
-    def _get_counterparty_risk(self, cid, tenant=None):
-        """
-        SECURITY FIX: now tenant-scoped (when tenant is provided) so a
-        counterparty's risk score cannot be pulled from a different tenant's
-        record if counterparty IDs are not globally unique. Also opens its
-        own short-lived session instead of reusing self.db, since this runs
-        on the hot predict() path and self.db may be shared across
-        concurrent requests (see class-level note in __init__).
-        """
+    def _get_counterparty_risk(self, cid, tenant):
         if not cid:
+            return 0.1
+        if not tenant:
+            logger.error(f"_get_counterparty_risk called without a tenant for cid={cid}; "
+                          f"refusing to run an unscoped lookup, returning neutral default")
             return 0.1
         db = SyncSessionLocal()
         try:
-            q = db.query(Counterparty).filter(Counterparty.id == cid)
-            if tenant:
-                q = q.filter(Counterparty.tenant == tenant)
+            q = db.query(Counterparty).filter(Counterparty.id == cid, Counterparty.tenant == tenant)
             cp = q.first()
             if cp:
                 return cp.risk_score
@@ -194,14 +163,12 @@ class SettlementPredictor:
             db.close()
         return 0.1
 
-    def _get_desk_exposure(self, desk, tenant=None):
-        """
-        SECURITY FIX: now tenant-scoped. Previously summed notional exposure
-        for a desk name across ALL tenants, so if two tenants happen to use
-        the same desk name, one tenant's fail-probability prediction (and
-        the auto-borrow cost it can trigger) was contaminated by another
-        tenant's unrelated trade volume.
-        """
+    def _get_desk_exposure(self, desk, tenant):
+        if not tenant:
+            logger.error(f"_get_desk_exposure called without a tenant for desk={desk}; "
+                          f"refusing to run an unscoped lookup, returning 0.0 (this "
+                          f"understates risk — check the caller)")
+            return 0.0
         try:
             from chronos_v5.repositories.desk_exposure_repository import DeskExposureRepository
             repo = DeskExposureRepository()
