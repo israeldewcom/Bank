@@ -8,6 +8,8 @@ from chronos_v5.models import User
 from chronos_v5.config import Config
 from chronos_v5.logger_setup import logger
 
+_MISSING_TOKEN_DETAIL = "No token to revoke — logout only applies to Bearer/JWT sessions, not API-key auth."
+
 router = APIRouter()
 
 class RegisterRequest(BaseModel):
@@ -55,6 +57,16 @@ def login(req: LoginRequest):
                 detail=f"{str(e)}. If you haven't paired a device yet, use your API key to call /auth/pairing-code."
             )
         raise HTTPException(status_code=401, detail=str(e))
+
+@router.post("/logout")
+def logout(request: Request, current_user: User = Depends(get_current_user)):
+    token = getattr(request.state, "jwt_token", None)
+    if not token:
+        # Authenticated via API key, not a JWT — nothing to revoke.
+        raise HTTPException(status_code=400, detail=_MISSING_TOKEN_DETAIL)
+    service = AuthService()
+    service.revoke_token(token)
+    return {"status": "logged_out"}
 
 @router.post("/pairing-code")
 def request_pairing_code(
