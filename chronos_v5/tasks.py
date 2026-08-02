@@ -57,8 +57,22 @@ def generate_alpha_signals(self):
 )
 def optimize_rehypothecation(self):
     from chronos_v5.profit_optimizer import ProfitOptimizer
-    optimizer = ProfitOptimizer()
-    optimizer.run()
+    from chronos_v5.models import TenantConfig
+    from chronos_v5.database import SyncSessionLocal
+    db = SyncSessionLocal()
+    try:
+        tenants = [row.tenant for row in db.query(TenantConfig.tenant).all()]
+    finally:
+        db.close()
+    if not tenants:
+        logger.warning("optimize_rehypothecation: no tenants found; nothing to optimize")
+        return
+    for tenant in tenants:
+        try:
+            optimizer = ProfitOptimizer(tenant=tenant)
+            optimizer.run()
+        except Exception as e:
+            logger.error(f"optimize_rehypothecation failed for tenant {tenant}: {e}")
 
 @celery_app.task(
     bind=True,
@@ -67,18 +81,6 @@ def optimize_rehypothecation(self):
     max_retries=3
 )
 def compute_risk_metrics(self):
-    """
-    RELIABILITY FIX: previously called engine.compute_all() with no
-    arguments. RiskEngine.compute_all() used to accept a falsy/None tenant
-    and silently compute VaR/ES/stress loss across every tenant's trades
-    merged together, then persist that blended figure mislabeled under
-    tenant "default" — a materially wrong risk number for any bank relying
-    on it, not just a missing-filter bug. compute_all() now requires tenant
-    and raises if it's missing, so this task must (and now does) iterate
-    every real tenant from TenantConfig and compute risk metrics once per
-    tenant, matching how every other per-tenant read/write path in this
-    codebase works.
-    """
     from chronos_v5.risk_engine import RiskEngine
     from chronos_v5.models import TenantConfig
     from chronos_v5.database import SyncSessionLocal
