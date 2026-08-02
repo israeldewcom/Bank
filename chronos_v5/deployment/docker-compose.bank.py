@@ -21,14 +21,21 @@ services:
 
   chronos-api:
     build: .
+    # BUG FIX: this was "5000:5000", matching chronos_v5/main.py's
+    # uvicorn.run(..., port=5000) rather than the Dockerfile's actual
+    # CMD, which runs uvicorn on --port 8000. Standardized on 8000
+    # everywhere (Dockerfile, main.py, this compose file, and the
+    # HTTP self-test's base_url in api/app.py) so the container's
+    # published port actually matches what the process listens on.
     ports:
-      - "5000:5000"
+      - "8000:8000"
     environment:
       DATABASE_URL: postgresql://chronos:${POSTGRES_PASSWORD:-chronos}@postgres:5432/chronos
       REDIS_URL: redis://redis:6379/0
       CHRONOS_ENV: production
       CHRONOS_API_KEY: "${API_KEY}"
       SECRET_KEY: "${SECRET_KEY}"
+      JWT_SECRET: "${JWT_SECRET}"
       HSM_ENABLED: "false"
       ASYNC_DB: "true"
       NIBSS_API_KEY: "${NIBSS_API_KEY}"
@@ -51,6 +58,7 @@ services:
       CELERY_BROKER_URL: redis://redis:6379/1
       CELERY_RESULT_BACKEND: redis://redis:6379/2
       SECRET_KEY: "${SECRET_KEY}"
+      JWT_SECRET: "${JWT_SECRET}"
     depends_on:
       - postgres
       - redis
