@@ -1,16 +1,18 @@
 # chronos_v5/utils/jwt_utils.py
 import jwt
+import uuid
 from datetime import datetime, timedelta, timezone
 from chronos_v5.config import Config
 from chronos_v5.logger_setup import logger
 
-def create_jwt(user_id: str, tenant: str, role: str, expires_delta: timedelta = None):
+def create_jwt(user_id: str, tenant: str, role: str, expires_delta: timedelta = None, jti: str = None):
     if expires_delta is None:
         expires_delta = timedelta(minutes=Config.JWT_EXPIRE_MINUTES)
     payload = {
         "sub": str(user_id),
         "tenant": tenant,
         "role": role,
+        "jti": jti or str(uuid.uuid4()),
         "exp": datetime.now(timezone.utc) + expires_delta,
         "iat": datetime.now(timezone.utc)
     }
