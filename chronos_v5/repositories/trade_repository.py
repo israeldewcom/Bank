@@ -4,6 +4,18 @@
 # and silently get cross-tenant results. tenant is now a required, non-
 # optional parameter on every read method in both TradeRepository and
 # TradeRepositoryAsync.
+#
+# SECURITY FIX (insert): insert() built the Trade row from trade_data but
+# never set tenant=trade_data['tenant'], even though every caller in
+# api/routers/trade.py computes and passes it. Trade.tenant has a Python-side
+# default of "default", so this didn't error — it silently filed every trade
+# under the "default" tenant regardless of who submitted it. Combined with
+# get()/get_all()/get_by_idempotency() being correctly tenant-filtered, this
+# meant real tenants saw empty results (risk_engine.compute_all, dashboards,
+# etc. would silently return nothing) while every tenant's trades collapsed
+# into one shared bucket under "default". insert() now requires tenant to be
+# present in trade_data and writes it onto the row explicitly, matching the
+# read-side discipline already enforced below.
 from chronos_v5.database import SyncSessionLocal, async_database, AsyncSessionLocal
 from chronos_v5.models import Trade
 from sqlalchemy import select, desc
@@ -25,6 +37,11 @@ class TradeRepository:
 
     def insert(self, trade_data: dict, idempotency_key: str = None) -> str:
         try:
+            tenant = trade_data.get('tenant')
+            if not tenant:
+                raise ValueError("trade_data['tenant'] is required for insert() — "
+                                  "refusing to fall back to the model default, which "
+                                  "would silently mix this trade into the 'default' tenant.")
             settle_dt = datetime.fromisoformat(trade_data['settle_date'])
             settle_dt = _to_naive_utc(settle_dt)
             now = datetime.now(timezone.utc).replace(tzinfo=None)
@@ -37,7 +54,8 @@ class TradeRepository:
                 notional=trade_data['notional'],
                 settle_date=settle_dt,
                 created_at=now,
-                idempotency_key=idempotency_key
+                idempotency_key=idempotency_key,
+                tenant=tenant
             )
             self.db.add(trade)
             self.db.commit()
@@ -85,6 +103,11 @@ class TradeRepository:
 
 class TradeRepositoryAsync:
     async def insert(self, trade_data: dict, idempotency_key: str = None) -> str:
+        tenant = trade_data.get('tenant')
+        if not tenant:
+            raise ValueError("trade_data['tenant'] is required for insert() — "
+                              "refusing to fall back to the model default, which "
+                              "would silently mix this trade into the 'default' tenant.")
         async with AsyncSessionLocal() as session:
             try:
                 settle_dt = datetime.fromisoformat(trade_data['settle_date'])
@@ -99,7 +122,8 @@ class TradeRepositoryAsync:
                     notional=trade_data['notional'],
                     settle_date=settle_dt,
                     created_at=now,
-                    idempotency_key=idempotency_key
+                    idempotency_key=idempotency_key,
+                    tenant=tenant
                 )
                 session.add(trade)
                 await session.commit()
