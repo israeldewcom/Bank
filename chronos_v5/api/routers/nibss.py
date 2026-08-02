@@ -10,11 +10,20 @@
 # read settlement history under a tenant they don't belong to just by
 # setting X-Tenant. That import is gone; every handler below uses the
 # authenticated user's own tenant.
+#
+# RELIABILITY FIX: settle() previously re-wrote trade.status/nibss_ref/
+# settled_at itself after calling submit_settlement(), duplicating (and now
+# conflicting with) the status management NIBSSClient does internally via
+# _reserve_settlement()/_finalize_settlement(). That duplicate write didn't
+# know about the SETTLING / SETTLEMENT_FAILED / DUPLICATE states the client
+# now uses for idempotent retries, so e.g. a DUPLICATE result (meaning this
+# call made no network request at all) would still get stamped SETTLED here.
+# NIBSSClient is now the single owner of trade.status/nibss_ref/settled_at
+# for the settlement lifecycle; this handler only reads the result back.
 from fastapi import APIRouter, Depends
 from fastapi_limiter.depends import RateLimiter
 from pydantic import BaseModel
 from typing import Optional
-from datetime import datetime, timezone
 from chronos_v5.nibss_client import NIBSSClient
 from chronos_v5.api.dependencies import get_current_user
 from chronos_v5.models import User, Trade
@@ -42,19 +51,7 @@ def settle(req: SettlementRequest, request: Request, current_user: User = Depend
         db.close()
 
     client = NIBSSClient(tenant=tenant)
-    result = client.submit_settlement(req.trade_id, req.amount, req.counterparty_bvn, req.collateral_ref)
-    if result.get("status") not in ("FAILED", "ERROR"):
-        db = SyncSessionLocal()
-        try:
-            trade = db.query(Trade).filter(Trade.id == req.trade_id, Trade.tenant == tenant).first()
-            if trade:
-                trade.status = "SETTLED"
-                trade.nibss_ref = result.get("reference") or result.get("tradeId")
-                trade.settled_at = datetime.now(timezone.utc)
-                db.commit()
-        finally:
-            db.close()
-    return result
+    return client.submit_settlement(req.trade_id, req.amount, req.counterparty_bvn, req.collateral_ref)
 
 @router.post("/recall", dependencies=[Depends(RateLimiter(times=10, seconds=60))])
 def recall(ref: str, request: Request, current_user: User = Depends(get_current_user)):
