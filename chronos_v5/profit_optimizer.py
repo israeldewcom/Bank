@@ -1,3 +1,4 @@
+# chronos_v5/profit_optimizer.py
 from chronos_v5.config import Config
 from chronos_v5.database import SyncSessionLocal
 from chronos_v5.models import CollateralHolding, AlphaSignal
@@ -7,7 +8,10 @@ import numpy as np
 from datetime import datetime, timedelta
 
 class ProfitOptimizer:
-    def __init__(self):
+    def __init__(self, tenant: str):
+        if not tenant:
+            raise ValueError("tenant is required for ProfitOptimizer")
+        self.tenant = tenant
         self.db = SyncSessionLocal()
         self.alpha_signals = {}
 
@@ -19,9 +23,12 @@ class ProfitOptimizer:
             self.alpha_signals[s.asset] = s.signal_value
 
     def optimize_rehypothecation(self):
-        holdings = self.db.query(CollateralHolding).filter(CollateralHolding.eligible == True).all()
+        holdings = self.db.query(CollateralHolding).filter(
+            CollateralHolding.eligible == True,
+            CollateralHolding.tenant == self.tenant
+        ).all()
         if not holdings:
-            logger.info("No collateral holdings to optimize")
+            logger.info(f"No collateral holdings to optimize for tenant {self.tenant}")
             return None
         best_asset = None
         best_score = -np.inf
@@ -36,7 +43,7 @@ class ProfitOptimizer:
                 best_score = score
                 best_asset = h
         if best_asset:
-            logger.info(f"Optimal rehypo asset: {best_asset.asset_type} with score {best_score}")
+            logger.info(f"Optimal rehypo asset for tenant {self.tenant}: {best_asset.asset_type} with score {best_score}")
             for h in holdings:
                 if h.id == best_asset.id:
                     h.quantity *= 1.1
