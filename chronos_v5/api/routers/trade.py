@@ -83,8 +83,18 @@ async def ingest_trade_async(
             raise HTTPException(status_code=500, detail="Duplicate handling error")
         raise
     predictor = SettlementPredictor()
-    prob = await predictor.predict_async(trade_dict)
-    await predictor.predict_and_store_async(trade_dict)
+    # BUG FIX: this previously called predictor.predict_async(trade_dict)
+    # AND predictor.predict_and_store_async(trade_dict) back to back.
+    # predict_and_store_async() already calls predict_async() internally
+    # (see chronos_v5/services/predictor.py) before caching the result in
+    # Redis, so every trade was running the full prediction pipeline
+    # twice: two model inferences, two online_model.learn_one() updates,
+    # and two drift_detector.update() calls for the same trade. That's
+    # wasted CPU on the hot ingest path and it silently double-weights
+    # every prediction in the drift detector's window. predict_and_store_async
+    # now returns the probability it computed, so a single call does both
+    # the prediction and the Redis/HSM side effects.
+    prob = await predictor.predict_and_store_async(trade_dict)
     pricing = PricingEngine()
     price = await pricing.get_client_price_async(trade.counterparty_id, trade.instrument_type or 'UNKNOWN', trade.notional)
     safe_delay(generate_alpha_signals)
