@@ -17,18 +17,33 @@ async def run_idempotency_self_test(base_url: str = None):
     Logs the result (PASS/FAIL) and returns a boolean.
     """
     if base_url is None:
-        port = os.getenv("PORT", "10000")
+        # BUG FIX: this defaulted to port 10000, which matched none of the
+        # app's actual listening ports (Dockerfile: 8000, old main.py:
+        # 5000). Standardized on 8000; PORT env var still overrides it.
+        port = os.getenv("PORT", "8000")
         base_url = f"http://localhost:{port}"
 
     # 1. Create a temporary test user and API key directly in DB
+    #
+    # BUG FIX: this previously constructed User(..., hashed_password=...,
+    # status="approved", id=uuid.uuid4()) — three separate mismatches
+    # against the real schema in models.py:
+    #   - the column is password_hash, not hashed_password
+    #   - status is a real column now (see models.py), but a freshly
+    #     approved self-test user also needs is_active=True or it will
+    #     fail auth_service.validate_api_key()'s is_active check
+    #   - User.id is String(36); passing a uuid.UUID object rather than
+    #     str(uuid.uuid4()) silently mismatches the column type on some
+    #     drivers the same way the admin router's lookups did
     db = SyncSessionLocal()
     test_email = f"self_test_{uuid.uuid4().hex[:8]}@chronos.local"
     test_user = User(
-        id=uuid.uuid4(),
+        id=str(uuid.uuid4()),
         email=test_email,
-        hashed_password=bcrypt.hashpw(b"temp_pass", bcrypt.gensalt()).decode(),
+        password_hash=bcrypt.hashpw(b"temp_pass", bcrypt.gensalt()).decode(),
         full_name="Self Test",
         status="approved",
+        is_active=True,
         role="user",
         tenant="default"
     )
