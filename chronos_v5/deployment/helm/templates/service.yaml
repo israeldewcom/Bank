@@ -7,7 +7,11 @@ metadata:
 spec:
   type: {{ .Values.service.type }}
   ports:
+    # BUG FIX: targetPort was hardcoded to 5000, which never matched the
+    # container's actual listening port (8000, per the Dockerfile CMD).
+    # Traffic routed through this Service would have failed to reach the
+    # pod at all. Now points at the same 8000 the container exposes.
     - port: {{ .Values.service.port }}
-      targetPort: 5000
+      targetPort: 8000
   selector:
     app: {{ include "chronos.name" . }}
