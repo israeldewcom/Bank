@@ -53,6 +53,14 @@ async def get_current_user(
     payload = decode_jwt(token)
     if payload is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired token")
+    # SECURITY FIX: tokens previously had no revocation check at all, so a
+    # logged-out or compromised token stayed valid until natural expiry.
+    # AuthService.is_token_revoked() checks the Redis blacklist populated by
+    # revoke_token()/logout().
+    jti = payload.get("jti")
+    auth_service = AuthService()
+    if auth_service.is_token_revoked(jti):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token has been revoked")
     user_id = payload.get("sub")
     if not user_id:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token payload")
@@ -65,6 +73,7 @@ async def get_current_user(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User not active")
     request.state.tenant = user.tenant
     request.state.auth_type = "jwt"
+    request.state.jwt_token = token
     return user
 
 async def get_admin_user(current_user: User = Depends(get_current_user)):
