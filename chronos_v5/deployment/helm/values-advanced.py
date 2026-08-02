@@ -1,5 +1,8 @@
 replicaCount: 3
 
+# See the note in values-bank.yaml about per-pod circuit breaker and
+# migration-lock state under replicaCount > 1.
+
 image:
   repository: chronos
   tag: latest
@@ -7,7 +10,9 @@ image:
 
 service:
   type: ClusterIP
-  port: 5000
+  # BUG FIX: was 5000; standardized on 8000 to match the Dockerfile's
+  # actual --port 8000 (see deployment.yaml / service.yaml).
+  port: 8000
 
 ingress:
   enabled: true
@@ -40,5 +45,9 @@ env:
   BACKFILL_TRAINING_ENABLED: "true"
   BACKFILL_CSV_PATH: "/app/historical_settlements.csv"
   SECRET_KEY: "your-strong-secret-key"  # Override
+  # BUG FIX: JWT_SECRET was missing here too (see values-bank.yaml) —
+  # required by Config.validate() in production, and must differ from
+  # SECRET_KEY.
+  JWT_SECRET: "your-separate-strong-jwt-secret"  # Override, must differ from SECRET_KEY
   API_KEY: "your-strong-api-key"
   NIBSS_API_KEY: "your-nibss-key"
