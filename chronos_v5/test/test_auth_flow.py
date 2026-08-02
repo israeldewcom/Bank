@@ -43,13 +43,20 @@ def test_auth_flow(client):
     user_id = data["user_id"]
 
     # 2. Create admin
+    #
+    # BUG FIX: this constructed User(..., hashed_password=..., status="approved")
+    # with no is_active — same mismatches fixed in create_admin.py and the
+    # idempotency self-test: the column is password_hash, not
+    # hashed_password, and an approved-but-inactive admin would still fail
+    # AuthService.login()'s is_active check.
     db = SyncSessionLocal()
     service = AuthService()
     admin = User(
         email="admin@chronos.local",
-        hashed_password=service.hash_password("Admin123!"),
+        password_hash=service.hash_password("Admin123!"),
         full_name="Admin",
         status="approved",
+        is_active=True,
         role="admin",
         tenant="default"
     )
@@ -58,7 +65,12 @@ def test_auth_flow(client):
     admin_id = admin.id
 
     # 3. Approve user → API key generated
-    raw_key = service.approve_user(uuid.UUID(user_id), admin_id)
+    #
+    # BUG FIX: User.id is String(36) (see models.py) — passing
+    # uuid.UUID(user_id) here compared a String column against a Python
+    # UUID object rather than its string form, the same class of bug
+    # fixed in api/routers/admin.py. approve_user() takes the raw string.
+    raw_key = service.approve_user(user_id, admin_id)
     assert raw_key is not None
 
     # 4. Login without fingerprint → validation error
@@ -87,7 +99,11 @@ def test_auth_flow(client):
     assert resp.json()["status"] == "pending"
 
     # 7. Admin approves device
-    device = db.query(Device).filter(Device.user_id == uuid.UUID(user_id)).first()
+    #
+    # BUG FIX: Device.user_id is String(36); comparing it against
+    # uuid.UUID(user_id) (a Python object, not a string) is the same
+    # mismatch fixed above and in api/routers/admin.py.
+    device = db.query(Device).filter(Device.user_id == user_id).first()
     service.approve_device(device.id, admin_id)
 
     # 8. Login with fingerprint
