@@ -93,11 +93,14 @@ class ExecutionOrder(Base):
     __tablename__ = "execution_orders"
     id = Column(BigInteger, primary_key=True)
     trade_id = Column(String(36), nullable=False, index=True)
+    tenant = Column(String(100), nullable=False, index=True)
+    client_order_id = Column(String(64), nullable=False, unique=True, index=True)
     order_type = Column(String(20))
     side = Column(String(10))
     quantity = Column(Float)
     price = Column(Float)
     status = Column(String(20))
+    gateway_response = Column(JSON)
     sent_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     filled_at = Column(DateTime)
     external_order_id = Column(String(100))
@@ -119,17 +122,6 @@ class User(Base):
     email = Column(String(255), unique=True, nullable=False, index=True)
     password_hash = Column(String(255), nullable=False)
     full_name = Column(String(255))
-    # SCHEMA FIX: `status` used to exist only in the (unreachable) Alembic
-    # migration, never on this ORM model. Every runtime query the app
-    # actually issues goes through this class, so `User.status` was an
-    # AttributeError waiting to happen — chronos_v5/api/routers/admin.py's
-    # list_pending_users() and chronos_v5/repositories/user_repository.py's
-    # get_pending_users() both filtered on it and would raise on every call.
-    # status is now the source of truth for the approval workflow
-    # (pending -> approved / rejected); is_active is derived from it and
-    # kept for backward-compatible reads (device/API-key checks already
-    # query is_active). register_user() sets status="pending" and
-    # is_active=False; approve_user()/reject_user() keep both in sync.
     status = Column(String(20), default="pending", nullable=False, index=True)
     is_active = Column(Boolean, default=False)
     role = Column(String(20), default="user")
