@@ -13,6 +13,7 @@ from chronos_v5.models import Trade, FailHistory, PnLAttribution, Counterparty
 from chronos_v5.hsm_abstraction import hsm
 from datetime import datetime, timezone, timedelta
 from sklearn.exceptions import NotFittedError
+from sqlalchemy import text
 
 class _ConstantProbabilityPredictor:
     """A dummy predictor that always returns a constant probability."""
@@ -96,15 +97,25 @@ class SettlementPredictor:
 
     def _retrain_if_needed(self):
         try:
-            import pandas as pd
-            query = "SELECT * FROM fail_history WHERE timestamp > NOW() - INTERVAL '30 days'"
+            # Query directly from Trade table to get needed columns, including tenant
+            query = text("""
+                SELECT t.id, t.desk, t.counterparty_id, t.notional, t.settle_date,
+                       t.instrument_type, t.tenant, t.created_at,
+                       fh.failed
+                FROM trades t
+                LEFT JOIN fail_history fh ON t.id = fh.trade_id
+                WHERE t.created_at > NOW() - INTERVAL '30 days'
+                  AND fh.failed IS NOT NULL
+            """)
             df = pd.read_sql(query, self.db.bind)
             if len(df) > 100:
                 features = self._generate_features(df)
                 targets = df['failed'].values
                 self.model.fit(features, targets)
                 joblib.dump(self.model, Config.MODEL_PATH)
-                logger.info("Model retrained on recent data")
+                logger.info("Model retrained on recent data from Trade join")
+            else:
+                logger.info("Not enough data for retraining")
         except Exception as e:
             logger.error(f"Retrain failed: {e}")
 
