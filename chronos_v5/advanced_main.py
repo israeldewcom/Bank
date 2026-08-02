@@ -24,18 +24,14 @@ def start_advanced_services():
         logger.info("Advanced features disabled")
         return
     logger.info("Starting advanced services...")
-    # Use Redis lock to ensure only one instance runs these
     r = redis.from_url(Config.REDIS_URL)
     lock_key = "advanced:services:lock"
-    # Try to acquire lock with expiry
     lock = r.setnx(lock_key, "1")
     if not lock:
         logger.info("Advanced services already running on another instance")
         return
-    # Set expiry, but we will renew it
-    r.expire(lock_key, 30)  # short expiry, renewed every 20s
+    r.expire(lock_key, 30)
 
-    # Start a background thread to renew the lock
     def renew_lock():
         while True:
             time.sleep(20)
@@ -49,17 +45,14 @@ def start_advanced_services():
     lock_renewer = threading.Thread(target=renew_lock, daemon=True)
     lock_renewer.start()
 
-    # Start CBN listener
     cbn_listener.start()
 
-    # Start Shadow VaR loop
     def shadow_var_loop():
         var = ShadowVaR()
         var.run_continuous()
     t = threading.Thread(target=shadow_var_loop, daemon=True)
     t.start()
 
-    # Start calibrator loop
     def calibrator_loop():
         calibrator = DynamicCalibrator()
         while True:
@@ -96,7 +89,8 @@ def main():
         logger.error(f"Configuration error: {e}")
         raise
     start_migration()
-    logger.info("Starting Chronos v5.2.1 Full Production Edition (Advanced) on http://0.0.0.0:5000")
+    port = int(os.getenv("PORT", "8000"))
+    logger.info(f"Starting Chronos v5.2.1 Full Production Edition (Advanced) on http://0.0.0.0:{port}")
     if Config.PROFILING_ENABLED:
         try:
             import py_spy
@@ -111,8 +105,7 @@ def main():
         logger.info("Prometheus metrics server on :8001")
     except Exception as e:
         logger.warning(f"Prometheus start failed: {e}")
-    # Use multiple workers for API, advanced services are in separate threads/locks
-    uvicorn.run("chronos_v5.api.app:app", host="0.0.0.0", port=5000,
+    uvicorn.run("chronos_v5.api.app:app", host="0.0.0.0", port=port,
                 log_level=Config.LOG_LEVEL.lower(),
                 workers=4, loop="uvloop", http="httptools",
                 access_log=False)
