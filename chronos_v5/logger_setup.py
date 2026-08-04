@@ -1,13 +1,13 @@
 import logging
 import sys
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from chronos_v5.config import Config
 
 class JsonFormatter(logging.Formatter):
     def format(self, record):
         log_record = {
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "level": record.levelname,
             "name": record.name,
             "message": record.getMessage(),
@@ -20,21 +20,21 @@ class JsonFormatter(logging.Formatter):
 
 def setup_logger():
     logger = logging.getLogger("chronos")
-    logger.setLevel(getattr(logging, Config.LOG_LEVEL.upper(), logging.INFO))
+    log_level = getattr(logging, Config.LOG_LEVEL.upper(), logging.INFO)
+    logger.setLevel(log_level)
+
     handler = logging.StreamHandler(sys.stdout)
-    if Config.LOG_JSON:
+    if Config.LOG_JSON or Config.ENV == "production":
         handler.setFormatter(JsonFormatter())
     else:
         formatter = logging.Formatter(
             "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
         )
         handler.setFormatter(formatter)
+
+    if logger.hasHandlers():
+        logger.handlers.clear()
     logger.addHandler(handler)
-    if Config.LOG_FILE:
-        from logging.handlers import RotatingFileHandler
-        fh = RotatingFileHandler(Config.LOG_FILE, maxBytes=Config.LOG_MAX_BYTES, backupCount=Config.LOG_BACKUP_COUNT)
-        fh.setFormatter(handler.formatter)
-        logger.addHandler(fh)
     return logger
 
 logger = setup_logger()
