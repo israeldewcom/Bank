@@ -1,0 +1,69 @@
+name: CI
+on: [push, pull_request]
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with: { python-version: '3.11' }
+      - name: Install deps
+        run: pip install flake8 black
+      - run: flake8 chronos_v5/ --count --statistics
+      - run: black --check chronos_v5/
+
+  unit-tests:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15
+        env: { POSTGRES_USER: chronos, POSTGRES_PASSWORD: chronos, POSTGRES_DB: chronos }
+        ports: [5432:5432]
+        options: --health-cmd pg_isready
+      redis:
+        image: redis:7.2-alpine
+        ports: [6379:6379]
+        options: --health-cmd "redis-cli ping"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with: { python-version: '3.11' }
+      - name: Install deps
+        run: pip install -r requirements.txt pytest pytest-cov
+      - name: Run tests
+        env:
+          DATABASE_URL: postgresql://chronos:chronos@localhost:5432/chronos
+          REDIS_URL: redis://localhost:6379/0
+          CHRONOS_ENV: test
+          CHRONOS_API_KEY: test-key
+          SECRET_KEY: test-secret-key-at-least-32-chars-long
+          JWT_SECRET: test-jwt-secret-different-from-secret-key
+          ASYNC_DB: "false"
+        run: pytest chronos_v5/tests/ -v --cov=chronos_v5 --cov-report=xml
+      - name: Upload coverage
+        uses: codecov/codecov-action@v4
+        with: { file: ./coverage.xml }
+
+  smoke-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create secrets files
+        run: |
+          mkdir -p ./secrets
+          echo -n "${{ secrets.API_KEY }}" > ./secrets/api_key.txt
+          echo -n "${{ secrets.SECRET_KEY }}" > ./secrets/secret_key.txt
+          echo -n "${{ secrets.JWT_SECRET }}" > ./secrets/jwt_secret.txt
+          echo -n "${{ secrets.NIBSS_KEY }}" > ./secrets/nibss_key.txt
+          echo -n "${{ secrets.POSTGRES_PASSWORD }}" > ./secrets/db_password.txt
+          chmod 600 ./secrets/*.txt
+      - name: Compose up
+        run: |
+          docker-compose -f deployment/docker-compose.bank.yml up -d
+          sleep 15
+          curl -f http://localhost:8000/health || exit 1
+      - name: Tear down
+        if: always()
+        run: docker-compose -f deployment/docker-compose.bank.yml down
