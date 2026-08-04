@@ -3,7 +3,6 @@ from chronos_v5.config import Config
 from chronos_v5.database import SyncSessionLocal
 from chronos_v5.models import CollateralHolding, AlphaSignal
 from chronos_v5.logger_setup import logger
-from chronos_v5.nigeria_adapter import nigeria
 import numpy as np
 from datetime import datetime, timedelta
 
