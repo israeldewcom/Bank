@@ -1,16 +1,4 @@
 # chronos_v5/nibss_client.py
-# RELIABILITY FIX: submit_settlement previously made a single POST with no
-# idempotency key and no retry — a dropped response (timeout, connection
-# reset) was indistinguishable from a dropped request, and retrying at any
-# layer above this client would double-submit the settlement at NIBSS. This
-# now follows the same pattern already proven correct in
-# settlement_execution.py: (1) atomically reserve the settlement intent on
-# the Trade row itself via a guarded status transition before any network
-# call, so concurrent/duplicate callers get a DUPLICATE result instead of a
-# second network call; (2) send a stable idempotency key (the trade_id) as
-# part of the payload so NIBSS's own side can dedupe if the client retries;
-# (3) retry with backoff, reusing the same request each attempt rather than
-# minting a new one.
 import time
 from datetime import datetime, timezone
 
@@ -26,7 +14,6 @@ from chronos_v5.models import Trade
 
 
 class DuplicateSettlementError(Exception):
-    """Raised when a settlement has already been reserved/sent for this trade."""
     pass
 
 
@@ -49,14 +36,6 @@ class NIBSSClient:
         return api_url, api_key
 
     def _reserve_settlement(self, trade_id: str):
-        """
-        Atomically transition PENDING -> SETTLING for this tenant's trade.
-        The WHERE clause (id, tenant, status == PENDING) is the source of
-        truth for idempotency: if another call already moved the row out of
-        PENDING, this UPDATE affects zero rows and we know a settlement
-        attempt is already in flight or done, without ever making a second
-        network call.
-        """
         db = SyncSessionLocal()
         try:
             result = db.execute(
