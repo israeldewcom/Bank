@@ -1,0 +1,87 @@
+name: Release Pipeline
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      image_tag: ${{ steps.image_tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: image_tag
+        run: echo "tag=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+      - name: Log in to registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}:latest
+            ghcr.io/${{ github.repository }}:${{ steps.image_tag.outputs.tag }}
+
+  deploy-staging:
+    runs-on: ubuntu-latest
+    needs: build
+    environment: staging
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v3
+      - run: |
+          helm upgrade --install chronos-staging ./deployment/helm/chronos \
+            --namespace staging --create-namespace \
+            --set image.tag=${{ needs.build.outputs.image_tag }} \
+            --set env.CHRONOS_ENV=staging
+
+  run-migrations-staging:
+    runs-on: ubuntu-latest
+    needs: deploy-staging
+    environment: staging
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v3
+      - run: |
+          helm upgrade --install chronos-migration ./deployment/helm/chronos \
+            --namespace staging \
+            --set image.tag=${{ needs.build.outputs.image_tag }} \
+            --set migration.enabled=true \
+            --set migration.command="alembic upgrade head"
+
+  smoke-test-staging:
+    runs-on: ubuntu-latest
+    needs: run-migrations-staging
+    environment: staging
+    steps:
+      - run: kubectl wait --namespace staging --for=condition=available deployment/chronos-staging --timeout=120s
+      - run: kubectl run smoke --rm -i --restart=Never --image=curlimages/curl -- curl -f http://chronos-staging:8000/health
+
+  promote-to-production:
+    runs-on: ubuntu-latest
+    needs: smoke-test-staging
+    environment: production
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v3
+      - run: |
+          helm upgrade --install chronos-prod ./deployment/helm/chronos \
+            --namespace production --create-namespace \
+            --set image.tag=${{ needs.build.outputs.image_tag }} \
+            --set env.CHRONOS_ENV=production
+      - run: |
+          helm upgrade --install chronos-prod-migration ./deployment/helm/chronos \
+            --namespace production \
+            --set image.tag=${{ needs.build.outputs.image_tag }} \
+            --set migration.enabled=true \
+            --set migration.command="alembic upgrade head"
+      - run: |
+          kubectl wait --namespace production --for=condition=available deployment/chronos-prod --timeout=120s
+          kubectl run smoke --rm -i --restart=Never --image=curlimages/curl -- curl -f http://chronos-prod:8000/health
