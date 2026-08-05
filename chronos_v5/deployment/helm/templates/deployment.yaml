@@ -14,14 +14,20 @@ spec:
       labels:
         app: {{ include "chronos.name" . }}
     spec:
+      volumes:
+        - name: chronos-secrets
+          secret:
+            secretName: chronos-secrets
+            defaultMode: 0400
       containers:
         - name: api
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           ports:
-            # BUG FIX: was 5000, which matched neither the Dockerfile's
-            # actual CMD (--port 8000) nor the readiness/liveness probes
-            # below once those are also fixed. Standardized on 8000.
             - containerPort: 8000
+          volumeMounts:
+            - name: chronos-secrets
+              mountPath: /run/secrets
+              readOnly: true
           env:
             - name: DATABASE_URL
               value: "postgresql://{{ .Values.postgres.user }}:{{ .Values.postgres.password }}@{{ .Values.postgres.host }}/{{ .Values.postgres.database }}"
@@ -31,35 +37,14 @@ spec:
               value: "redis://{{ .Values.redis.host }}:{{ .Values.redis.port }}/1"
             - name: CELERY_RESULT_BACKEND
               value: "redis://{{ .Values.redis.host }}:{{ .Values.redis.port }}/2"
-            # BUG FIX: templates/secrets.yaml creates a chronos-secrets
-            # Secret (api-key, secret-key, jwt-key, nibss-key) but nothing
-            # previously referenced it — every value.env.* entry below was
-            # being injected as a plain, unencrypted env var instead,
-            # making the Secret object dead config that gave a false
-            # impression of secret management. Sensitive keys are now
-            # sourced from the Secret via secretKeyRef and excluded from
-            # the generic {{ range .Values.env }} loop below so they are
-            # not duplicated as plaintext env vars.
-            - name: CHRONOS_API_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: chronos-secrets
-                  key: api-key
-            - name: SECRET_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: chronos-secrets
-                  key: secret-key
-            - name: JWT_SECRET
-              valueFrom:
-                secretKeyRef:
-                  name: chronos-secrets
-                  key: jwt-key
-            - name: NIBSS_API_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: chronos-secrets
-                  key: nibss-key
+            - name: CHRONOS_API_KEY_FILE
+              value: /run/secrets/api-key
+            - name: SECRET_KEY_FILE
+              value: /run/secrets/secret-key
+            - name: JWT_SECRET_FILE
+              value: /run/secrets/jwt-key
+            - name: NIBSS_API_KEY_FILE
+              value: /run/secrets/nibss-key
             {{- range $key, $val := .Values.env }}
             {{- if not (has $key (list "API_KEY" "SECRET_KEY" "JWT_SECRET" "NIBSS_API_KEY")) }}
             - name: {{ $key }}
@@ -78,3 +63,5 @@ spec:
               port: 8000
             initialDelaySeconds: 5
             periodSeconds: 5
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
