@@ -1,0 +1,23 @@
+groups:
+  - name: chronos_alerts
+    rules:
+      - alert: ChronosHighErrorRate
+        expr: rate(http_requests_total{status=~"5.."}[5m]) > 0.05
+        for: 2m
+        annotations:
+          summary: "High error rate on Chronos API"
+      - alert: ChronosQueueBacklog
+        expr: celery_queue_length{queue="celery"} > 100
+        for: 5m
+        annotations:
+          summary: "Celery queue backlog detected"
+      - alert: ChronosDBConnectionPoolExhausted
+        expr: db_connections_in_use / db_connections_max > 0.9
+        for: 1m
+        annotations:
+          summary: "Database connection pool near exhaustion"
+      - alert: ChronosLatencyHigh
+        expr: histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le)) > 0.5
+        for: 3m
+        annotations:
+          summary: "High API latency"
