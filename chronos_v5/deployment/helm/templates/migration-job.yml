@@ -1,0 +1,47 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "chronos.fullname" . }}-migration
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-5"
+    helm.sh/hook-delete-policy: hook-succeeded
+  labels:
+    app: {{ include "chronos.name" . }}
+spec:
+  ttlSecondsAfterFinished: 300
+  template:
+    metadata:
+      labels:
+        app: {{ include "chronos.name" . }}
+        component: migration
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: migration
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          command: ["alembic"]
+          args: ["upgrade", "head"]
+          env:
+            - name: DATABASE_URL
+              value: "postgresql://{{ .Values.postgres.user }}:{{ .Values.postgres.password }}@{{ .Values.postgres.host }}/{{ .Values.postgres.database }}"
+            - name: REDIS_URL
+              value: "redis://{{ .Values.redis.host }}:{{ .Values.redis.port }}/0"
+            - name: SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: chronos-secrets
+                  key: secret-key
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: chronos-secrets
+                  key: jwt-key
+          volumeMounts:
+            - name: alembic
+              mountPath: /app/alembic
+      volumes:
+        - name: alembic
+          configMap:
+            name: {{ include "chronos.fullname" . }}-alembic
+            optional: true
