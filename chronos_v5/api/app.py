@@ -48,7 +48,7 @@ app.add_middleware(
 # ============================================================
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],   # Replace with your frontend domain(s) in production
+    allow_origins=["https://julia-jeck.vercel.app/"],   # Replace with your frontend domain(s) in production
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
