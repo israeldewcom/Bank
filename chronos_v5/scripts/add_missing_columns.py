@@ -1,6 +1,5 @@
 # chronos_v5/scripts/add_missing_columns.py
 import os
-import sys
 import sqlalchemy as sa
 from sqlalchemy import text
 from chronos_v5.config import Config
