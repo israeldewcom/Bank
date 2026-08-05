@@ -43,9 +43,13 @@ app.add_middleware(
     allowed_hosts=Config.ALLOWED_HOSTS
 )
 
+# ============================================================
+# CORS FIX: allow all origins for now (adjust for production)
+# ============================================================
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"] if Config.ENV == "development" else Config.ALLOWED_HOSTS,
+    allow_origins=["*"],   # Replace with your frontend domain(s) in production
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -254,9 +258,6 @@ def ensure_admin_exists():
             }
         )
         db.commit()
-        # SECURITY FIX: Removed plaintext key logging. Key is only stored in DB.
-        # The raw key is returned in the response of the /admin/users/approve endpoint.
-        # Admins must capture it there.
         logger.info("🔑 Admin API key generated securely (not logged).")
     except Exception as e:
         logger.error(f"Failed to create admin: {e}")
@@ -335,16 +336,10 @@ def run_self_test_db():
         db.close()
 
 # ============================================================
-# HTTP CONCURRENCY SELF‑TEST (background) – FIXED with guaranteed logging
+# HTTP CONCURRENCY SELF‑TEST (background)
 # ============================================================
 async def run_http_concurrency_test():
-    """Background concurrency test – fires 50 requests concurrently using the async endpoint."""
-    await asyncio.sleep(5)  # give the server a moment to start
-    # BUG FIX: this was hardcoded to port 10000, which matched none of
-    # main.py's port=5000, the Dockerfile's --port 8000, or (post-fix)
-    # either of those now-standardized-on-8000 entrypoints. The self-test
-    # could never actually connect. Now defaults to 8000 and still honors
-    # PORT if the deployment overrides it.
+    await asyncio.sleep(5)
     base_url = f"http://localhost:{os.getenv('PORT', '8000')}"
 
     db = SyncSessionLocal()
@@ -459,19 +454,14 @@ async def run_http_concurrency_test():
 # ============================================================
 @app.on_event("startup")
 async def startup():
-    # --- Ensure api_keys table exists ---
     ensure_api_keys_table()
-    # --- Ensure tenant_configs table exists ---
     ensure_tenant_configs_table()
 
-    # --- Detect actual schema ---
     detect_user_columns()
     detect_trades_columns()
 
-    # --- Admin creation ---
     ensure_admin_exists()
 
-    # --- Rate limiter ---
     if Config.ENV == "test":
         logger.info("Rate limiter disabled in test mode")
     else:
@@ -485,7 +475,6 @@ async def startup():
             await async_database.connect()
             logger.info("Async DB connected")
 
-    # --- Self‑test (only if explicitly enabled) ---
     if os.getenv("RUN_SELFTEST", "false").lower() == "true":
         try:
             passed = run_self_test_db()
@@ -496,7 +485,6 @@ async def startup():
         except Exception as e:
             logger.error(f"Self‑test error: {e}")
 
-        # --- Background HTTP concurrency test ---
         asyncio.create_task(run_http_concurrency_test())
 
     asyncio.create_task(nigeria.connect_ngx_websocket())
