@@ -44,12 +44,12 @@ app.add_middleware(
 )
 
 # ============================================================
-# CORS FIX: allow all origins for now (adjust for production)
+# CORS FIX: allow all origins (no credentials) – adjust for production
 # ============================================================
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://julia-jeck.vercel.app/"],   # Replace with your frontend domain(s) in production
-    allow_credentials=True,
+    allow_origins=["*"],   # Replace with your Vercel domain for production
+    allow_credentials=False,  # IMPORTANT: False because we use "*" and don't send cookies
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -269,12 +269,6 @@ def ensure_admin_exists():
 # DB‑BASED IDEMPOTENCY SELF‑TEST (no HTTP)
 # ============================================================
 def run_self_test_db():
-    """
-    Tests idempotency by inserting a trade with a random key,
-    then attempting to insert another with the same key.
-    Expects a unique violation on the second insert.
-    Logs PASS/FAIL.
-    """
     if not TRADES_COLUMNS:
         logger.warning("Trades columns not detected – skipping self‑test.")
         return False
