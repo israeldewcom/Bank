@@ -1,15 +1,21 @@
 import sqlalchemy as sa
-from sqlalchemy import text
+from sqlalchemy import text, Table, Column, String, UUID, Boolean, DateTime, ForeignKey
 from chronos_v5.config import Config
+from chronos_v5.models import Base, Device
 
 def fix():
     engine = sa.create_engine(Config.DATABASE_URL)
+    
+    # Create all missing tables (including devices)
+    Base.metadata.create_all(engine)
+    print("✅ Ensured all tables exist (including devices)")
+
     with engine.connect() as conn:
-        # 1. Ensure tenant column exists (already done, but safe)
+        # Ensure tenant column on counterparties
         conn.execute(text("ALTER TABLE counterparties ADD COLUMN IF NOT EXISTS tenant VARCHAR(50) DEFAULT 'default' NOT NULL"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS ix_counterparties_tenant ON counterparties (tenant)"))
 
-        # 2. Create approved device for admin (THIS IS CRITICAL)
+        # Insert default admin device
         conn.execute(text("""
             INSERT INTO devices (id, user_id, device_name, device_fingerprint, status, tenant, requested_at, approved_at)
             SELECT gen_random_uuid(), u.id, 'Default Web Client', 'web-client', 'approved', 'default', NOW(), NOW()
@@ -18,12 +24,8 @@ def fix():
             ON CONFLICT (id) DO NOTHING
         """))
 
-        # 3. Ensure admin password is 'Admin123!'
-        # (If you want a different password, change the string here)
-        conn.execute(text("UPDATE users SET password_hash = crypt('Admin123!', gen_salt('bf')) WHERE email = 'admin@chronos.com'"))
-
         conn.commit()
-        print("✅ Fixed columns and created admin device with password 'Admin123!'")
+        print("✅ Fixed counterparties.tenant and created admin device")
 
 if __name__ == "__main__":
     fix()
