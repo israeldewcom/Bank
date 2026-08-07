@@ -43,13 +43,11 @@ app.add_middleware(
     allowed_hosts=Config.ALLOWED_HOSTS
 )
 
-# ============================================================
-# CORS FIX: allow all origins (no credentials) – adjust for production
-# ============================================================
+# CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],   # Replace with your Vercel domain for production
-    allow_credentials=False,  # IMPORTANT: False because we use "*" and don't send cookies
+    allow_origins=["*"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -195,7 +193,7 @@ def ensure_tenant_configs_table():
         db.close()
 
 # ============================================================
-# ADMIN CREATION
+# ADMIN CREATION & DEVICE APPROVAL (FIXED)
 # ============================================================
 def ensure_admin_exists():
     if not USER_COLUMNS or PASSWORD_COLUMN is None:
@@ -205,68 +203,96 @@ def ensure_admin_exists():
     db = SyncSessionLocal()
     try:
         result = db.execute(text("SELECT id FROM users WHERE role = 'admin' LIMIT 1"))
-        if result.fetchone():
-            logger.info("Admin already exists.")
-            return
+        admin_row = result.fetchone()
+        if not admin_row:
+            admin_email = os.getenv("ADMIN_EMAIL", "admin@chronos.com")
+            admin_password = os.getenv("ADMIN_PASSWORD", "Admin123!")
+            hashed = bcrypt.hashpw(admin_password.encode(), bcrypt.gensalt()).decode()
+            admin_id = uuid.uuid4()
+            now = datetime.now(timezone.utc)
 
-        admin_email = os.getenv("ADMIN_EMAIL", "admin@chronos.local")
-        admin_password = os.getenv("ADMIN_PASSWORD", "Admin123!")
-        hashed = bcrypt.hashpw(admin_password.encode(), bcrypt.gensalt()).decode()
-        admin_id = uuid.uuid4()
-        now = datetime.now(timezone.utc)
+            columns = [col for col in USER_COLUMNS if col in [
+                "id", "email", PASSWORD_COLUMN, "full_name", "role", "tenant",
+                "created_at", "is_active", "trial_expiry", "last_login"
+            ]]
+            placeholders = ", ".join([f":{col}" for col in columns])
+            sql = f"INSERT INTO users ({', '.join(columns)}) VALUES ({placeholders})"
 
-        columns = [col for col in USER_COLUMNS if col in [
-            "id", "email", PASSWORD_COLUMN, "full_name", "role", "tenant",
-            "created_at", "is_active", "trial_expiry", "last_login"
-        ]]
-        placeholders = ", ".join([f":{col}" for col in columns])
-        sql = f"INSERT INTO users ({', '.join(columns)}) VALUES ({placeholders})"
-
-        params = {
-            "id": str(admin_id),
-            "email": admin_email,
-            PASSWORD_COLUMN: hashed,
-            "full_name": "System Admin",
-            "role": "admin",
-            "tenant": "default",
-            "created_at": now,
-            "is_active": True,
-            "trial_expiry": None,
-            "last_login": None
-        }
-        params = {k: v for k, v in params.items() if k in columns}
-
-        db.execute(text(sql), params)
-        db.commit()
-        logger.info(f"✅ Admin user created with email: {admin_email}")
-
-        raw_key = secrets.token_urlsafe(32)
-        api_key_id = uuid.uuid4()
-        key_hash = bcrypt.hashpw(raw_key.encode(), bcrypt.gensalt()).decode()
-        db.execute(
-            text("""
-                INSERT INTO api_keys (id, user_id, key_prefix, key_hash, tenant, created_at)
-                VALUES (:id, :user_id, :key_prefix, :key_hash, :tenant, :created_at)
-            """),
-            {
-                "id": str(api_key_id),
-                "user_id": str(admin_id),
-                "key_prefix": raw_key[:12],
-                "key_hash": key_hash,
+            params = {
+                "id": str(admin_id),
+                "email": admin_email,
+                PASSWORD_COLUMN: hashed,
+                "full_name": "System Admin",
+                "role": "admin",
                 "tenant": "default",
-                "created_at": now
+                "created_at": now,
+                "is_active": True,
+                "trial_expiry": None,
+                "last_login": None
             }
-        )
-        db.commit()
-        logger.info("🔑 Admin API key generated securely (not logged).")
+            params = {k: v for k, v in params.items() if k in columns}
+
+            db.execute(text(sql), params)
+            db.commit()
+            logger.info(f"✅ Admin user created with email: {admin_email}")
+
+            raw_key = secrets.token_urlsafe(32)
+            api_key_id = uuid.uuid4()
+            key_hash = bcrypt.hashpw(raw_key.encode(), bcrypt.gensalt()).decode()
+            db.execute(
+                text("""
+                    INSERT INTO api_keys (id, user_id, key_prefix, key_hash, tenant, created_at)
+                    VALUES (:id, :user_id, :key_prefix, :key_hash, :tenant, :created_at)
+                """),
+                {
+                    "id": str(api_key_id),
+                    "user_id": str(admin_id),
+                    "key_prefix": raw_key[:12],
+                    "key_hash": key_hash,
+                    "tenant": "default",
+                    "created_at": now
+                }
+            )
+            db.commit()
+            logger.info("🔑 Admin API key generated securely (not logged).")
+            # Create approved device for admin
+            _ensure_admin_device(db, str(admin_id))
+        else:
+            admin_id = admin_row[0]
+            # Ensure device exists even if admin already existed
+            _ensure_admin_device(db, str(admin_id))
     except Exception as e:
         logger.error(f"Failed to create admin: {e}")
         db.rollback()
     finally:
         db.close()
 
+def _ensure_admin_device(db, admin_id):
+    """Create an approved device for the admin if missing."""
+    try:
+        # Check if a device with fingerprint 'web-client' already exists for this admin
+        result = db.execute(
+            text("SELECT id FROM devices WHERE user_id = :uid AND device_fingerprint = 'web-client'"),
+            {"uid": admin_id}
+        )
+        if not result.fetchone():
+            db.execute(
+                text("""
+                    INSERT INTO devices (id, user_id, device_name, device_fingerprint, status, tenant, requested_at, approved_at)
+                    VALUES (gen_random_uuid(), :uid, 'Default Web Client', 'web-client', 'approved', 'default', NOW(), NOW())
+                """),
+                {"uid": admin_id}
+            )
+            db.commit()
+            logger.info(f"✅ Approved device 'web-client' created for admin {admin_id}")
+        else:
+            logger.debug(f"Admin device 'web-client' already exists for {admin_id}")
+    except Exception as e:
+        logger.error(f"Failed to ensure admin device: {e}")
+        db.rollback()
+
 # ============================================================
-# DB‑BASED IDEMPOTENCY SELF‑TEST (no HTTP)
+# DB‑BASED IDEMPOTENCY SELF‑TEST
 # ============================================================
 def run_self_test_db():
     if not TRADES_COLUMNS:
@@ -454,6 +480,7 @@ async def startup():
     detect_user_columns()
     detect_trades_columns()
 
+    # This will now also create an approved device for admin
     ensure_admin_exists()
 
     if Config.ENV == "test":
