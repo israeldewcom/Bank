@@ -48,6 +48,28 @@ def create_k8s_secret(secret_name: str, namespace: str, key_value: str) -> bool:
         logger.error(f"Failed to create Kubernetes Secret: {e}")
         return False
 
+def _ensure_admin_device(db, admin_id):
+    """Create an approved device for the admin if missing."""
+    try:
+        from sqlalchemy import text
+        result = db.execute(
+            text("SELECT id FROM devices WHERE user_id = :uid AND device_fingerprint = 'web-client'"),
+            {"uid": admin_id}
+        )
+        if not result.fetchone():
+            db.execute(
+                text("""
+                    INSERT INTO devices (id, user_id, device_name, device_fingerprint, status, tenant, requested_at, approved_at)
+                    VALUES (gen_random_uuid(), :uid, 'Default Web Client', 'web-client', 'approved', 'default', NOW(), NOW())
+                """),
+                {"uid": admin_id}
+            )
+            db.commit()
+            logger.info(f"✅ Approved device 'web-client' created for admin {admin_id}")
+    except Exception as e:
+        logger.error(f"Failed to ensure admin device: {e}")
+        db.rollback()
+
 def bootstrap_admin(output_file: str = None):
     env = Config.ENV
     admin_email = os.getenv("ADMIN_EMAIL")
@@ -73,6 +95,8 @@ def bootstrap_admin(output_file: str = None):
         existing = db.query(User).filter(User.email == admin_email).first()
         if existing:
             logger.info(f"Admin user {admin_email} already exists. Skipping creation.")
+            # Still ensure device exists
+            _ensure_admin_device(db, existing.id)
             return
 
         hashed = bcrypt.hashpw(admin_password.encode(), bcrypt.gensalt()).decode()
@@ -92,6 +116,9 @@ def bootstrap_admin(output_file: str = None):
         )
         db.add(admin)
         db.commit()
+
+        # Create device immediately
+        _ensure_admin_device(db, admin_id)
 
         raw_key = secrets.token_urlsafe(32)
         key_hash = bcrypt.hashpw(raw_key.encode(), bcrypt.gensalt()).decode()
