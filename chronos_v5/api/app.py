@@ -43,7 +43,6 @@ app.add_middleware(
     allowed_hosts=Config.ALLOWED_HOSTS
 )
 
-# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -195,6 +194,28 @@ def ensure_tenant_configs_table():
 # ============================================================
 # ADMIN CREATION & DEVICE APPROVAL (FIXED)
 # ============================================================
+def _ensure_admin_device(db, admin_id):
+    """Create an approved device for the admin if missing."""
+    try:
+        result = db.execute(
+            text("SELECT id FROM devices WHERE user_id = :uid AND device_fingerprint = 'web-client'"),
+            {"uid": admin_id}
+        )
+        if not result.fetchone():
+            db.execute(
+                text("""
+                    INSERT INTO devices (id, user_id, device_name, device_fingerprint, status, tenant, requested_at, approved_at)
+                    VALUES (gen_random_uuid(), :uid, 'Default Web Client', 'web-client', 'approved', 'default', NOW(), NOW())
+                """),
+                {"uid": admin_id}
+            )
+            logger.info(f"✅ Approved device 'web-client' created for admin {admin_id}")
+        else:
+            logger.debug(f"Admin device 'web-client' already exists for {admin_id}")
+    except Exception as e:
+        logger.error(f"Failed to ensure admin device: {e}")
+        db.rollback()
+
 def ensure_admin_exists():
     if not USER_COLUMNS or PASSWORD_COLUMN is None:
         logger.warning("Cannot create admin – no column info available")
@@ -202,13 +223,17 @@ def ensure_admin_exists():
 
     db = SyncSessionLocal()
     try:
-        result = db.execute(text("SELECT id FROM users WHERE role = 'admin' LIMIT 1"))
+        admin_email = os.getenv("ADMIN_EMAIL", "admin@chronos.com")
+        admin_password = os.getenv("ADMIN_PASSWORD", "Admin123!")
+
+        # Check by email first
+        result = db.execute(text("SELECT id FROM users WHERE email = :email"), {"email": admin_email})
         admin_row = result.fetchone()
+
         if not admin_row:
-            admin_email = os.getenv("ADMIN_EMAIL", "admin@chronos.com")
-            admin_password = os.getenv("ADMIN_PASSWORD", "Admin123!")
+            # Create admin user
             hashed = bcrypt.hashpw(admin_password.encode(), bcrypt.gensalt()).decode()
-            admin_id = uuid.uuid4()
+            admin_id = str(uuid.uuid4())
             now = datetime.now(timezone.utc)
 
             columns = [col for col in USER_COLUMNS if col in [
@@ -219,7 +244,7 @@ def ensure_admin_exists():
             sql = f"INSERT INTO users ({', '.join(columns)}) VALUES ({placeholders})"
 
             params = {
-                "id": str(admin_id),
+                "id": admin_id,
                 "email": admin_email,
                 PASSWORD_COLUMN: hashed,
                 "full_name": "System Admin",
@@ -236,8 +261,9 @@ def ensure_admin_exists():
             db.commit()
             logger.info(f"✅ Admin user created with email: {admin_email}")
 
+            # Create API key
             raw_key = secrets.token_urlsafe(32)
-            api_key_id = uuid.uuid4()
+            api_key_id = str(uuid.uuid4())
             key_hash = bcrypt.hashpw(raw_key.encode(), bcrypt.gensalt()).decode()
             db.execute(
                 text("""
@@ -245,8 +271,8 @@ def ensure_admin_exists():
                     VALUES (:id, :user_id, :key_prefix, :key_hash, :tenant, :created_at)
                 """),
                 {
-                    "id": str(api_key_id),
-                    "user_id": str(admin_id),
+                    "id": api_key_id,
+                    "user_id": admin_id,
                     "key_prefix": raw_key[:12],
                     "key_hash": key_hash,
                     "tenant": "default",
@@ -254,42 +280,20 @@ def ensure_admin_exists():
                 }
             )
             db.commit()
-            logger.info("🔑 Admin API key generated securely (not logged).")
-            # Create approved device for admin
-            _ensure_admin_device(db, str(admin_id))
+            logger.info("🔑 Admin API key generated securely.")
+
+            # Create device for new admin
+            _ensure_admin_device(db, admin_id)
         else:
-            admin_id = admin_row[0]
+            admin_id = str(admin_row[0])
             # Ensure device exists even if admin already existed
-            _ensure_admin_device(db, str(admin_id))
+            _ensure_admin_device(db, admin_id)
+
     except Exception as e:
-        logger.error(f"Failed to create admin: {e}")
+        logger.error(f"Failed to ensure admin: {e}")
         db.rollback()
     finally:
         db.close()
-
-def _ensure_admin_device(db, admin_id):
-    """Create an approved device for the admin if missing."""
-    try:
-        # Check if a device with fingerprint 'web-client' already exists for this admin
-        result = db.execute(
-            text("SELECT id FROM devices WHERE user_id = :uid AND device_fingerprint = 'web-client'"),
-            {"uid": admin_id}
-        )
-        if not result.fetchone():
-            db.execute(
-                text("""
-                    INSERT INTO devices (id, user_id, device_name, device_fingerprint, status, tenant, requested_at, approved_at)
-                    VALUES (gen_random_uuid(), :uid, 'Default Web Client', 'web-client', 'approved', 'default', NOW(), NOW())
-                """),
-                {"uid": admin_id}
-            )
-            db.commit()
-            logger.info(f"✅ Approved device 'web-client' created for admin {admin_id}")
-        else:
-            logger.debug(f"Admin device 'web-client' already exists for {admin_id}")
-    except Exception as e:
-        logger.error(f"Failed to ensure admin device: {e}")
-        db.rollback()
 
 # ============================================================
 # DB‑BASED IDEMPOTENCY SELF‑TEST
