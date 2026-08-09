@@ -65,7 +65,7 @@ class PnLAttribution(Base):
 
 class CollateralHolding(Base):
     __tablename__ = "collateral_holdings"
-    id = Column(BigInteger, primary_key=True)
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
     counterparty_id = Column(String(100), nullable=False)
     asset_type = Column(String(50), nullable=False)
     quantity = Column(Float, nullable=False)
@@ -77,7 +77,7 @@ class CollateralHolding(Base):
 
 class MarketDataPoint(Base):
     __tablename__ = "market_data"
-    id = Column(BigInteger, primary_key=True)
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
     symbol = Column(String(50), nullable=False)
     price = Column(Float, nullable=False)
     volume = Column(Float)
@@ -86,7 +86,7 @@ class MarketDataPoint(Base):
 
 class AlphaSignal(Base):
     __tablename__ = "alpha_signals"
-    id = Column(BigInteger, primary_key=True)
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
     asset = Column(String(50), nullable=False)
     signal_value = Column(Float, nullable=False)
     strategy = Column(String(50))
@@ -95,7 +95,7 @@ class AlphaSignal(Base):
 
 class ExecutionOrder(Base):
     __tablename__ = "execution_orders"
-    id = Column(BigInteger, primary_key=True)
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
     trade_id = Column(String(36), nullable=False, index=True)
     tenant = Column(String(100), nullable=False, index=True)
     client_order_id = Column(String(64), nullable=False, unique=True, index=True)
@@ -111,7 +111,7 @@ class ExecutionOrder(Base):
 
 class RiskMetrics(Base):
     __tablename__ = "risk_metrics"
-    id = Column(BigInteger, primary_key=True)
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
     desk = Column(String(100), nullable=False)
     var_99 = Column(Float)
     expected_shortfall = Column(Float)
@@ -181,7 +181,7 @@ class TenantConfig(Base):
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
 # ============================================================
-# NEW MODELS (append to existing models.py)
+# NEW MODELS (FIXED)
 # ============================================================
 
 class Tenant(Base):
@@ -286,7 +286,8 @@ class RehypothecationData(Base):
     __tablename__ = "rehypothecation_data"
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     tenant_id = Column(String(36), ForeignKey("tenants.id"), nullable=False)
-    collateral_id = Column(String(36), ForeignKey("collateral_holdings.id"), nullable=False)
+    # COLLATERAL_ID MUST MATCH CollateralHolding.id TYPE (BIGINT)
+    collateral_id = Column(BigInteger, ForeignKey("collateral_holdings.id"), nullable=False)
     rehypothecated_amount = Column(Float, default=0.0)
     ratio = Column(Float, default=0.0)
     last_updated = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
