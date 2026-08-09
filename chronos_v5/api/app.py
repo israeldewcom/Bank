@@ -1,6 +1,4 @@
-# chronos_v5/api/app.py – updated to import all new routers
-
-# ... existing imports ...
+# chronos_v5/api/app.py
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
@@ -20,9 +18,19 @@ from chronos_v5.api.middleware import CorrelationIdMiddleware
 from chronos_v5.api.routers import (
     trade, collateral, risk, backtest, model, audit, dashboard, pricing, execution, nibss, websocket,
     auth, admin, dashboard_tenant, tenant_config,
-    # new routers
-    admin_extended, execution_analytics, system_queues, system_workers, system_logs,
-    collateral_extended, backup, automation, webhooks, monitoring_dashboard, advanced_extras
+    # ===== NEW ROUTERS =====
+    admin_extended,
+    execution_analytics,
+    system_queues,
+    system_workers,
+    system_logs,
+    collateral_extended,
+    backup,
+    automation,
+    webhooks,
+    monitoring_dashboard,
+    advanced_extras,
+    tenants,  # if you have a separate tenants router
 )
 from chronos_v5.logger_setup import logger
 from prometheus_client import generate_latest, REGISTRY
@@ -74,7 +82,9 @@ if Config.OTEL_ENABLED:
     except ImportError as e:
         logger.warning(f"OpenTelemetry import failed: {e}")
 
-# --- ROUTERS ---
+# ============================================================
+# MOUNT ALL ROUTERS
+# ============================================================
 app.include_router(trade.router, prefix="/trade", tags=["Trade"])
 app.include_router(collateral.router, prefix="/collateral", tags=["Collateral"])
 app.include_router(risk.router, prefix="/risk", tags=["Risk"])
@@ -91,8 +101,9 @@ app.include_router(admin.router, prefix="/admin", tags=["Admin"])
 app.include_router(dashboard_tenant.router, prefix="/tenant", tags=["Tenant Dashboard"])
 app.include_router(tenant_config.router, prefix="/tenant/config", tags=["Tenant Config"])
 
-# --- NEW ROUTERS ---
+# ===== NEW ROUTERS =====
 app.include_router(admin_extended.router, prefix="/admin", tags=["Admin Extended"])
+app.include_router(tenants.router, prefix="/admin/tenants", tags=["Tenants"])  # if you have a separate tenants router
 app.include_router(execution_analytics.router, prefix="/execution", tags=["Execution Analytics"])
 app.include_router(system_queues.router, prefix="/system", tags=["System Queues"])
 app.include_router(system_workers.router, prefix="/system", tags=["System Workers"])
