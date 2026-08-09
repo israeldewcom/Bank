@@ -1,4 +1,6 @@
-# chronos_v5/api/app.py
+# chronos_v5/api/app.py – updated to import all new routers
+
+# ... existing imports ...
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
@@ -16,9 +18,12 @@ from datetime import datetime, timezone, timedelta
 from chronos_v5.config import Config
 from chronos_v5.api.middleware import CorrelationIdMiddleware
 from chronos_v5.api.routers import (
-    trade, collateral, risk, backtest, model, audit, dashboard, pricing, execution, nibss, websocket
+    trade, collateral, risk, backtest, model, audit, dashboard, pricing, execution, nibss, websocket,
+    auth, admin, dashboard_tenant, tenant_config,
+    # new routers
+    admin_extended, execution_analytics, system_queues, system_workers, system_logs,
+    collateral_extended, backup, automation, webhooks, monitoring_dashboard, advanced_extras
 )
-from chronos_v5.api.routers import auth, admin, dashboard_tenant, tenant_config
 from chronos_v5.logger_setup import logger
 from prometheus_client import generate_latest, REGISTRY
 from fastapi.responses import Response
@@ -85,6 +90,19 @@ app.include_router(auth.router, prefix="/auth", tags=["Authentication"])
 app.include_router(admin.router, prefix="/admin", tags=["Admin"])
 app.include_router(dashboard_tenant.router, prefix="/tenant", tags=["Tenant Dashboard"])
 app.include_router(tenant_config.router, prefix="/tenant/config", tags=["Tenant Config"])
+
+# --- NEW ROUTERS ---
+app.include_router(admin_extended.router, prefix="/admin", tags=["Admin Extended"])
+app.include_router(execution_analytics.router, prefix="/execution", tags=["Execution Analytics"])
+app.include_router(system_queues.router, prefix="/system", tags=["System Queues"])
+app.include_router(system_workers.router, prefix="/system", tags=["System Workers"])
+app.include_router(system_logs.router, prefix="/system", tags=["System Logs"])
+app.include_router(collateral_extended.router, prefix="/collateral", tags=["Collateral Extended"])
+app.include_router(backup.router, prefix="/admin/backups", tags=["Backup"])
+app.include_router(automation.router, prefix="/automation", tags=["Automation"])
+app.include_router(webhooks.router, prefix="/webhooks", tags=["Webhooks"])
+app.include_router(monitoring_dashboard.router, prefix="/system", tags=["System Monitoring"])
+app.include_router(advanced_extras.router, prefix="/advanced", tags=["Advanced Extras"])
 
 if Config.ENV != "production" or os.getenv("ADVANCED_FEATURES_ENABLED", "false").lower() == "true":
     try:
@@ -192,10 +210,9 @@ def ensure_tenant_configs_table():
         db.close()
 
 # ============================================================
-# ADMIN CREATION & DEVICE APPROVAL (FIXED)
+# ADMIN CREATION & DEVICE APPROVAL
 # ============================================================
 def _ensure_admin_device(db, admin_id):
-    """Create an approved device for the admin if missing."""
     try:
         result = db.execute(
             text("SELECT id FROM devices WHERE user_id = :uid AND device_fingerprint = 'web-client'"),
@@ -210,8 +227,6 @@ def _ensure_admin_device(db, admin_id):
                 {"uid": admin_id}
             )
             logger.info(f"✅ Approved device 'web-client' created for admin {admin_id}")
-        else:
-            logger.debug(f"Admin device 'web-client' already exists for {admin_id}")
     except Exception as e:
         logger.error(f"Failed to ensure admin device: {e}")
         db.rollback()
@@ -226,12 +241,10 @@ def ensure_admin_exists():
         admin_email = os.getenv("ADMIN_EMAIL", "admin@chronos.com")
         admin_password = os.getenv("ADMIN_PASSWORD", "Admin123!")
 
-        # Check by email first
         result = db.execute(text("SELECT id FROM users WHERE email = :email"), {"email": admin_email})
         admin_row = result.fetchone()
 
         if not admin_row:
-            # Create admin user
             hashed = bcrypt.hashpw(admin_password.encode(), bcrypt.gensalt()).decode()
             admin_id = str(uuid.uuid4())
             now = datetime.now(timezone.utc)
@@ -261,7 +274,6 @@ def ensure_admin_exists():
             db.commit()
             logger.info(f"✅ Admin user created with email: {admin_email}")
 
-            # Create API key
             raw_key = secrets.token_urlsafe(32)
             api_key_id = str(uuid.uuid4())
             key_hash = bcrypt.hashpw(raw_key.encode(), bcrypt.gensalt()).decode()
@@ -282,11 +294,9 @@ def ensure_admin_exists():
             db.commit()
             logger.info("🔑 Admin API key generated securely.")
 
-            # Create device for new admin
             _ensure_admin_device(db, admin_id)
         else:
             admin_id = str(admin_row[0])
-            # Ensure device exists even if admin already existed
             _ensure_admin_device(db, admin_id)
 
     except Exception as e:
@@ -484,7 +494,6 @@ async def startup():
     detect_user_columns()
     detect_trades_columns()
 
-    # This will now also create an approved device for admin
     ensure_admin_exists()
 
     if Config.ENV == "test":
