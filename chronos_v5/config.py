@@ -1,14 +1,4 @@
 # chronos_v5/config.py
-# Production-hardened configuration for Chronos v5
-# - Stronger validation for production
-# - Optional secret-store integration (AWS Secrets Manager, Vault) if configured
-# - Safe defaults that require explicit secure override in production
-# - Helpers for logging config and DB URL resolution
-#
-# NOTE: This file is careful to avoid hard runtime dependencies on optional secret
-# backends. If you enable SECRET_STORE integration, ensure the corresponding client
-# libraries (boto3 for AWS, hvac for HashiCorp Vault) are installed and configured.
-
 import os
 import base64
 import warnings
@@ -47,13 +37,12 @@ class Config:
     CELERY_TASK_SOFT_TIME_LIMIT = int(os.getenv("CELERY_TASK_SOFT_TIME_LIMIT", "540"))
 
     # ===== SECURITY =====
-    # Prefer explicit, high-entropy values in production. Do NOT allow unsafe defaults.
     API_KEY = os.getenv("CHRONOS_API_KEY", None)
-    ENV = os.getenv("CHRONOS_ENV", "development")  # development | staging | production | test
+    ENV = os.getenv("CHRONOS_ENV", "development")
     RATE_LIMIT = os.getenv("CHRONOS_RATE_LIMIT", "100 per minute")
     ALLOWED_HOSTS = [h.strip() for h in os.getenv("ALLOWED_HOSTS", "").split(",") if h.strip()] or []
-    SECRET_KEY = os.getenv("SECRET_KEY", None)               # strong random string (>=32 chars)
-    ENCRYPTION_KEY = os.getenv("ENCRYPTION_KEY", None)       # base64 URL-safe 32-byte key
+    SECRET_KEY = os.getenv("SECRET_KEY", None)
+    ENCRYPTION_KEY = os.getenv("ENCRYPTION_KEY", None)
     RUN_SELFTEST = os.getenv("RUN_SELFTEST", "false").lower() == "true"
 
     # ===== AUTH & PASSWORD POLICY =====
@@ -67,7 +56,7 @@ class Config:
     PASSWORD_REQUIRE_SPECIAL = os.getenv("PASSWORD_REQUIRE_SPECIAL", "true").lower() == "true"
     AUTH_RATE_LIMIT_LOGIN = os.getenv("AUTH_RATE_LIMIT_LOGIN", "10 per minute")
     AUTH_RATE_LIMIT_REGISTER = os.getenv("AUTH_RATE_LIMIT_REGISTER", "5 per hour")
-    ADMIN_BOOTSTRAP_MODE = os.getenv("ADMIN_BOOTSTRAP_MODE", "disabled")  # disabled | env | manual
+    ADMIN_BOOTSTRAP_MODE = os.getenv("ADMIN_BOOTSTRAP_MODE", "disabled")
 
     # ===== HSM =====
     HSM_ENABLED = os.getenv("HSM_ENABLED", "false").lower() == "true"
@@ -81,7 +70,7 @@ class Config:
     MODEL_RETRAIN_INTERVAL = int(os.getenv("MODEL_RETRAIN_INTERVAL", "3600"))
     ONLINE_LEARNING_BATCH_SIZE = int(os.getenv("ONLINE_LEARNING_BATCH_SIZE", "100"))
     CONCEPT_DRIFT_THRESHOLD = float(os.getenv("CONCEPT_DRIFT_THRESHOLD", "0.05"))
-    MODEL_STORAGE_BACKEND = os.getenv("MODEL_STORAGE_BACKEND", "local")  # local | s3 | gcs
+    MODEL_STORAGE_BACKEND = os.getenv("MODEL_STORAGE_BACKEND", "local")
     MODEL_STORAGE_BUCKET = os.getenv("MODEL_STORAGE_BUCKET", "")
     MODEL_STORAGE_PREFIX = os.getenv("MODEL_STORAGE_PREFIX", "models/")
     AWS_ACCESS_KEY = os.getenv("AWS_ACCESS_KEY", "")
@@ -208,21 +197,43 @@ class Config:
     DB_BACKUP_ENABLED = os.getenv("DB_BACKUP_ENABLED", "false").lower() == "true"
     DB_BACKUP_PATH = os.getenv("DB_BACKUP_PATH", "/backups")
     DB_BACKUP_INTERVAL = int(os.getenv("DB_BACKUP_INTERVAL", "86400"))
+    BACKUP_RETENTION_DAYS = int(os.getenv("BACKUP_RETENTION_DAYS", "7"))
+    BACKUP_COMPRESSION = os.getenv("BACKUP_COMPRESSION", "gzip").lower()
 
-    # ===== SECRET STORE (optional) =====
-    # SECRET_STORE_URL can be something like "aws-secrets://..." or "vault://..."
+    # ===== AUTOMATION =====
+    AUTOMATION_ENABLED = os.getenv("AUTOMATION_ENABLED", "true").lower() == "true"
+    AUTOMATION_SCHEDULE_DEFAULT = os.getenv("AUTOMATION_SCHEDULE_DEFAULT", "daily 02:00")
+
+    # ===== MONITORING =====
+    MONITORING_QUEUE_POLL_INTERVAL = int(os.getenv("MONITORING_QUEUE_POLL_INTERVAL", "10"))
+    MONITORING_LOG_TAIL_LINES = int(os.getenv("MONITORING_LOG_TAIL_LINES", "100"))
+
+    # ===== WEBHOOKS =====
+    WEBHOOK_TIMEOUT_SEC = int(os.getenv("WEBHOOK_TIMEOUT_SEC", "5"))
+    WEBHOOK_RETRY_COUNT = int(os.getenv("WEBHOOK_RETRY_COUNT", "3"))
+
+    # ===== SECRET STORE =====
     SECRET_STORE_URL = os.getenv("SECRET_STORE_URL", "")
 
-    # Utility helpers
+    # ===== TENANT DEFAULTS =====
+    DEFAULT_TENANT_CONFIG = {
+        "performance_fee_percent": 0.20,
+        "bloomberg_api_key": "",
+        "reuters_api_key": "",
+        "alpha_vantage_key": "",
+        "nibss_api_key": "",
+        "cbn_openapi_url": CBN_OPENAPI_URL,
+        "ngx_api_url": NGX_API_URL,
+        "use_global_model": True,
+        "alpha_strategy_type": ALPHA_STRATEGY_TYPE,
+    }
+
     @classmethod
     def _derive_encryption_key_from_secret(cls, secret: str) -> str:
-        """
-        Derive a stable 32-byte URL-safe base64 key from SECRET_KEY using PBKDF2.
-        """
         kdf = PBKDF2HMAC(
             algorithm=hashes.SHA256(),
             length=32,
-            salt=b'chronos_secure_salt_v1',  # keep stable across restarts; rotate if needed
+            salt=b'chronos_secure_salt_v1',
             iterations=200_000
         )
         key = base64.urlsafe_b64encode(kdf.derive(secret.encode()))
@@ -230,13 +241,8 @@ class Config:
 
     @classmethod
     def get_database_url(cls) -> str:
-        """
-        Returns DATABASE_URL if set, otherwise composes one from DB_* variables.
-        In production we require explicit DATABASE_URL (no localhost).
-        """
         if cls.DATABASE_URL:
             return cls.DATABASE_URL
-        # Compose only for local/dev convenience
         proto = cls.DB_ENGINE
         user = cls.DB_USER
         password = cls.DB_PASS
@@ -255,24 +261,15 @@ class Config:
 
     @classmethod
     def _maybe_fetch_from_secret_store(cls, name: str) -> Optional[str]:
-        """
-        Attempt to fetch a secret from an external store if SECRET_STORE_URL is configured.
-        This method is intentionally non-fatal: if the required client library is missing
-        or the store is not available, we do not crash here. Use secret store in production
-        pipelines and set env vars as fallback for bootstrapping.
-        """
         url = cls.SECRET_STORE_URL or ""
         if not url:
             return None
 
-        # AWS Secrets Manager style: secret with name -> return value
         if url.startswith("aws://") or url.startswith("secretsmanager://"):
             try:
                 import boto3
                 client = boto3.client('secretsmanager')
-                secret_name = name
-                resp = client.get_secret_value(SecretId=secret_name)
-                # secret can be in SecretString or SecretBinary
+                resp = client.get_secret_value(SecretId=name)
                 if 'SecretString' in resp and resp['SecretString']:
                     return resp['SecretString']
                 elif 'SecretBinary' in resp and resp['SecretBinary']:
@@ -281,39 +278,27 @@ class Config:
                 warnings.warn(f"AWS Secrets fetch failed for {name}: {e}")
                 return None
 
-        # Vault style: vault://<addr>/<path>#<key>
         if url.startswith("vault://") or url.startswith("vaults://"):
             try:
                 import hvac
-                # url format: vault://<addr>/<path>#<key>
                 tail = url.split("://", 1)[1]
-                # if user provided a direct vault path in SECRET_STORE_URL, use it; otherwise expect name
                 vault_addr = os.getenv("VAULT_ADDR") or f"https://{tail.split('/')[0]}"
                 client = hvac.Client(url=vault_addr, token=os.getenv("VAULT_TOKEN"))
-                vault_path = name
-                read = client.secrets.kv.v2.read_secret_version(path=vault_path)
+                read = client.secrets.kv.v2.read_secret_version(path=name)
                 data = read.get("data", {}).get("data", {})
-                # prefer "value" or first key
                 if "value" in data:
                     return data["value"]
                 if data:
-                    # return first value
                     return next(iter(data.values()))
             except Exception as e:
                 warnings.warn(f"Vault fetch failed for {name}: {e}")
                 return None
 
-        # Unknown scheme or not implemented
         warnings.warn(f"SECRET_STORE_URL configured but scheme not supported or fetch failed for {name}")
         return None
 
     @classmethod
     def get_logging_config(cls):
-        """
-        Returns a dictionary suitable for dictConfig (optional).
-        Consumers can import and use this to configure structured logging.
-        """
-        # Minimal, pluggable config. Keep simple so it can be extended.
         return {
             "version": 1,
             "disable_existing_loggers": False,
@@ -322,7 +307,7 @@ class Config:
                     "format": "%(asctime)s %(levelname)s %(name)s %(message)s"
                 },
                 "json": {
-                    "format": "%(message)s"  # assume a JSON logger will be used in practice
+                    "format": "%(message)s"
                 }
             },
             "handlers": {
@@ -340,22 +325,14 @@ class Config:
 
     @classmethod
     def validate(cls):
-        """
-        Validate configuration and attempt safe automatic resolution where appropriate.
-        Raise RuntimeError if validation fails for production-critical settings.
-        """
         errors: List[str] = []
 
-        # DATABASE_URL resolution
         if not cls.DATABASE_URL:
-            # try compose for developer convenience, but in production require explicit DATABASE_URL
             cls.DATABASE_URL = cls.get_database_url()
             if cls.ENV == "production" and ("localhost" in cls.DATABASE_URL or "127.0.0.1" in cls.DATABASE_URL):
                 errors.append("DATABASE_URL must be set to a production-ready host (not localhost/127.0.0.1).")
 
-        # SECRET_KEY handling
         if not cls.SECRET_KEY:
-            # attempt to fetch from secret store
             secret = cls._maybe_fetch_from_secret_store("SECRET_KEY")
             if secret:
                 cls.SECRET_KEY = secret
@@ -365,13 +342,11 @@ class Config:
         if cls.SECRET_KEY and len(cls.SECRET_KEY) < 32:
             errors.append("SECRET_KEY must be at least 32 characters long for production security.")
 
-        # ENCRYPTION_KEY handling - derive if missing (but prefer explicit setting in production)
         if not cls.ENCRYPTION_KEY:
             fetched = cls._maybe_fetch_from_secret_store("ENCRYPTION_KEY")
             if fetched:
                 cls.ENCRYPTION_KEY = fetched
             elif cls.SECRET_KEY:
-                # derive from SECRET_KEY (deterministic). This is acceptable as a fallback but prefer explicit key.
                 cls.ENCRYPTION_KEY = cls._derive_encryption_key_from_secret(cls.SECRET_KEY)
                 warnings.warn("ENCRYPTION_KEY was not set explicitly. Derived from SECRET_KEY as a fallback; set ENCRYPTION_KEY in secret store for rotation safety.")
             else:
@@ -380,14 +355,11 @@ class Config:
         if cls.ENCRYPTION_KEY and not cls._base64_key_valid(cls.ENCRYPTION_KEY):
             errors.append("ENCRYPTION_KEY must be a base64 URL-safe encoded key representing at least 32 bytes.")
 
-        # JWT secret
         if not cls.JWT_SECRET:
-            # try secret store
             fetched = cls._maybe_fetch_from_secret_store("JWT_SECRET")
             if fetched:
                 cls.JWT_SECRET = fetched
             elif cls.SECRET_KEY:
-                # Accept using SECRET_KEY as JWT_SECRET in non-production only
                 if cls.ENV == "production":
                     errors.append("JWT_SECRET is not set explicitly in production. Set JWT_SECRET to a dedicated secret (>=32 chars).")
                 else:
@@ -399,7 +371,6 @@ class Config:
         if cls.JWT_SECRET and len(cls.JWT_SECRET) < 32:
             errors.append("JWT_SECRET must be at least 32 characters long.")
 
-        # API key
         if not cls.API_KEY:
             fetched = cls._maybe_fetch_from_secret_store("CHRONOS_API_KEY")
             if fetched:
@@ -408,7 +379,6 @@ class Config:
                 errors.append("CHRONOS_API_KEY is not set. This service requires an API key for internal admin operations.")
 
         if cls.ENV == "production":
-            # Production-specific checks
             if not cls.ALLOWED_HOSTS:
                 errors.append("ALLOWED_HOSTS must be set for production to avoid open host access (do not use '*').")
             if cls.REDIS_URL.startswith("redis://localhost") or "127.0.0.1" in cls.REDIS_URL:
@@ -418,43 +388,33 @@ class Config:
             if cls.RUN_SELFTEST:
                 errors.append("RUN_SELFTEST must be false in production. Self-tests can interfere with live systems.")
             if cls.ADMIN_BOOTSTRAP_MODE.lower() == "env":
-                # Env bootstrap allowed but must be secure: ensure ADMIN_EMAILS populated and ADMIN_PASSWORD not default
                 if not cls.ADMIN_EMAILS:
                     errors.append("ADMIN_EMAILS must be specified when ADMIN_BOOTSTRAP_MODE=env.")
-                # Do not attempt to read ADMIN_PASSWORD here; require manual bootstrap instead.
-            # Disallow insecure HSM defaults
             if cls.HSM_ENABLED and not cls.HSM_PIN:
                 errors.append("HSM_ENABLED is true but HSM_PIN is not set. Provide a secure PIN via secret store.")
 
-        # TLS / Letsencrypt validation
         if cls.LETSENCRYPT_ENABLED:
             if not cls.LETSENCRYPT_DOMAIN:
                 errors.append("LETSENCRYPT_DOMAIN must be set when LETSENCRYPT_ENABLED=true.")
             if not cls.LETSENCRYPT_EMAIL:
                 errors.append("LETSENCRYPT_EMAIL must be set when LETSENCRYPT_ENABLED=true.")
 
-        # Execution engine
         if cls.EXECUTION_ENGINE_ENABLED and not cls.EXECUTION_GATEWAY_API_KEY:
             warnings.warn("EXECUTION_ENGINE_ENABLED is true but EXECUTION_GATEWAY_API_KEY is not set. Execution may fail without proper credentials.")
 
-        # MODEL storage
         if cls.MODEL_STORAGE_BACKEND.lower() == "s3":
             if not (cls.AWS_ACCESS_KEY and cls.AWS_SECRET_KEY and cls.MODEL_STORAGE_BUCKET):
                 errors.append("MODEL_STORAGE_BACKEND=s3 requires AWS_ACCESS_KEY, AWS_SECRET_KEY, and MODEL_STORAGE_BUCKET to be set.")
 
-        # HSM PIN default check (prevent shipping dangerous defaults)
         if cls.HSM_ENABLED and (not cls.HSM_PIN or cls.HSM_PIN in ("changeme", "1234", "0000")):
             errors.append("HSM_PIN appears to be a weak default. Provide a strong PIN via secret store.")
 
-        # ALLOWED_CHARS sanity for some numeric values
         if cls.DB_POOL_SIZE <= 0:
             errors.append("DB_POOL_SIZE must be > 0")
         if cls.DB_MAX_OVERFLOW < 0:
             errors.append("DB_MAX_OVERFLOW must be >= 0")
 
-        # Final error handling
         if errors:
             raise RuntimeError("Configuration validation failed:\n - " + "\n - ".join(errors))
 
-    # Run validation on import to fail fast in CI / container start
 Config.validate()
