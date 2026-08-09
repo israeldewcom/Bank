@@ -9,6 +9,10 @@ import uuid
 
 Base = declarative_base()
 
+# ============================================================
+# EXISTING MODELS (keep these)
+# ============================================================
+
 class Trade(Base):
     __tablename__ = "trades"
     id = Column(String(36), primary_key=True)
@@ -175,3 +179,114 @@ class TenantConfig(Base):
     use_global_model = Column(Boolean, default=True)
     alpha_strategy_type = Column(String(50), nullable=True)
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+# ============================================================
+# NEW MODELS (append to existing models.py)
+# ============================================================
+
+class Tenant(Base):
+    __tablename__ = "tenants"
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    name = Column(String(100), nullable=False, unique=True)
+    status = Column(SQLAEnum('active', 'pending', 'suspended', name='tenant_status'), default='pending')
+    config = Column(JSON, nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+class Role(Base):
+    __tablename__ = "roles"
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    name = Column(String(50), unique=True, nullable=False)
+    description = Column(Text)
+    permissions = Column(JSON, nullable=False, default=[])
+    tenant_id = Column(String(36), ForeignKey("tenants.id"), nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+class Permission(Base):
+    __tablename__ = "permissions"
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    resource = Column(String(100), nullable=False)
+    action = Column(String(50), nullable=False)
+    description = Column(Text)
+    tenant_id = Column(String(36), ForeignKey("tenants.id"), nullable=True)
+
+class AutomationJob(Base):
+    __tablename__ = "automation_jobs"
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    name = Column(String(100), nullable=False)
+    description = Column(Text)
+    schedule = Column(String(50), nullable=False)
+    job_type = Column(String(50), nullable=False)
+    payload = Column(JSON, nullable=True)
+    tenant_id = Column(String(36), ForeignKey("tenants.id"), nullable=False)
+    status = Column(SQLAEnum('active', 'inactive', 'running', 'failed', name='job_status'), default='active')
+    last_run = Column(DateTime, nullable=True)
+    next_run = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+class Webhook(Base):
+    __tablename__ = "webhooks"
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    name = Column(String(100), nullable=False)
+    url = Column(String(255), nullable=False)
+    events = Column(JSON, nullable=False)
+    secret = Column(String(255), nullable=True)
+    tenant_id = Column(String(36), ForeignKey("tenants.id"), nullable=False)
+    status = Column(SQLAEnum('active', 'inactive', 'failed', name='webhook_status'), default='active')
+    last_triggered = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+class BackupRecord(Base):
+    __tablename__ = "backup_records"
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    file_path = Column(String(255), nullable=False)
+    size_bytes = Column(BigInteger)
+    status = Column(SQLAEnum('pending', 'completed', 'failed', name='backup_status'), default='pending')
+    tenant_id = Column(String(36), ForeignKey("tenants.id"), nullable=False)
+    started_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    completed_at = Column(DateTime, nullable=True)
+    error_message = Column(Text, nullable=True)
+
+class PaymentQueueItem(Base):
+    __tablename__ = "payment_queue_items"
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    trade_id = Column(String(36), ForeignKey("trades.id"), nullable=False)
+    amount = Column(Float, nullable=False)
+    currency = Column(String(10), default="NGN")
+    priority = Column(SQLAEnum('high', 'medium', 'low', name='priority_enum'), default='medium')
+    status = Column(SQLAEnum('queued', 'processing', 'completed', 'failed', name='payment_status'), default='queued')
+    tenant_id = Column(String(36), ForeignKey("tenants.id"), nullable=False)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    processed_at = Column(DateTime, nullable=True)
+    error_message = Column(Text, nullable=True)
+
+class MarginCall(Base):
+    __tablename__ = "margin_calls"
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    counterparty_id = Column(String(100), nullable=False)
+    amount = Column(Float, nullable=False)
+    due_date = Column(DateTime, nullable=False)
+    status = Column(SQLAEnum('pending', 'urgent', 'scheduled', 'resolved', name='margin_status'), default='pending')
+    tenant_id = Column(String(36), ForeignKey("tenants.id"), nullable=False)
+    resolved_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+class Portfolio(Base):
+    __tablename__ = "portfolios"
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    tenant_id = Column(String(36), ForeignKey("tenants.id"), nullable=False, unique=True)
+    total_value = Column(Float, default=0.0)
+    cash_balance = Column(Float, default=0.0)
+    last_updated = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+class RehypothecationData(Base):
+    __tablename__ = "rehypothecation_data"
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    tenant_id = Column(String(36), ForeignKey("tenants.id"), nullable=False)
+    collateral_id = Column(String(36), ForeignKey("collateral_holdings.id"), nullable=False)
+    rehypothecated_amount = Column(Float, default=0.0)
+    ratio = Column(Float, default=0.0)
+    last_updated = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
