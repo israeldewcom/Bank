@@ -1,7 +1,4 @@
-# chronos_v5/api/routers/websocket.py
-# SECURITY FIX: get_api_key was imported but never actually applied as a
-# dependency, so /ws/market accepted any unauthenticated connection. It is
-# now checked before websocket.accept() is called.
+# chronos_v5/api/routers/websocket.py – updated
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends, status
 from chronos_v5.config import Config
 from chronos_v5.nigeria_adapter import nigeria
