@@ -18,19 +18,10 @@ from chronos_v5.api.middleware import CorrelationIdMiddleware
 from chronos_v5.api.routers import (
     trade, collateral, risk, backtest, model, audit, dashboard, pricing, execution, nibss, websocket,
     auth, admin, dashboard_tenant, tenant_config,
-    # ===== NEW ROUTERS =====
-    admin_extended,
-    execution_analytics,
-    system_queues,
-    system_workers,
-    system_logs,
-    collateral_extended,
-    backup,
-    automation,
-    webhooks,
-    monitoring_dashboard,
-    advanced_extras,
-    tenants,  # if you have a separate tenants router
+    admin_extended, roles,
+    execution_analytics, system_queues, system_workers, system_logs,
+    collateral_extended, backup, automation, webhooks,
+    monitoring_dashboard, advanced_extras, tenants
 )
 from chronos_v5.logger_setup import logger
 from prometheus_client import generate_latest, REGISTRY
@@ -101,9 +92,10 @@ app.include_router(admin.router, prefix="/admin", tags=["Admin"])
 app.include_router(dashboard_tenant.router, prefix="/tenant", tags=["Tenant Dashboard"])
 app.include_router(tenant_config.router, prefix="/tenant/config", tags=["Tenant Config"])
 
-# ===== NEW ROUTERS =====
+# ===== New routers =====
 app.include_router(admin_extended.router, prefix="/admin", tags=["Admin Extended"])
-app.include_router(tenants.router, prefix="/admin/tenants", tags=["Tenants"])  # if you have a separate tenants router
+app.include_router(roles.router, prefix="/admin/roles", tags=["Roles"])
+app.include_router(tenants.router, prefix="/admin/tenants", tags=["Tenants"])
 app.include_router(execution_analytics.router, prefix="/execution", tags=["Execution Analytics"])
 app.include_router(system_queues.router, prefix="/system", tags=["System Queues"])
 app.include_router(system_workers.router, prefix="/system", tags=["System Workers"])
@@ -200,6 +192,8 @@ def ensure_tenant_configs_table():
         db.execute(text("""
             CREATE TABLE IF NOT EXISTS tenant_configs (
                 tenant VARCHAR(50) PRIMARY KEY,
+                organisation_name VARCHAR(255),
+                industry VARCHAR(255),
                 performance_fee_percent FLOAT DEFAULT 0.20,
                 bloomberg_api_key_enc TEXT,
                 reuters_api_key_enc TEXT,
